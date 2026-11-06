@@ -1,27 +1,29 @@
-// Produce the Tauri config a CI build uses: the repo's own `tauri.conf.json`
-// with exactly the two things a GitHub runner cannot satisfy stripped out.
+// Strip the two things a GitHub runner cannot satisfy from `tauri.conf.json`:
 //
 //  - Authenticode signing (`bundle.windows.certificateThumbprint`) needs the
 //    author's Certum/SimplySign token plugged into the runner's certificate
-//    store. Without it `signtool` fails and the build stops after the (very
-//    long) Rust compile.
+//    store. Without it `signtool` fails — AFTER the 12-minute Rust compile,
+//    which is how this file came to exist.
 //  - Updater artifact signing (`bundle.createUpdaterArtifacts`) needs
 //    `TAURI_SIGNING_PRIVATE_KEY`, a secret this fork does not have.
 //
-// The repository's own config is never edited — the release script depends on
-// it — and the generated file is written next to it so every relative path in
-// the config (`frontendDist`, `icons`, `installerHooks`) still resolves the way
-// it does for a normal build. Everything else, NSIS target included, is left
-// alone: the artifact is a normal installer that simply isn't code-signed.
+// It edits the file IN PLACE, and only on the runner: `actions/checkout` hands
+// CI a disposable copy, so nothing is committed back. A separate `--config`
+// patch would have been neater, but `--config` MERGES into the base config and
+// a key that is merely absent from the patch keeps the base value — so the only
+// way to be sure the thumbprint is gone is to not have it in the file at all.
+//
+// Everything else (NSIS target, its languages, the installer hooks, the icons)
+// is left exactly as the repository has it. The result is a normal installer
+// that simply isn't code-signed.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const source = join(repoRoot, 'src-tauri', 'tauri.conf.json');
-const target = join(repoRoot, 'src-tauri', 'tauri.build.json');
+const configPath = join(repoRoot, 'src-tauri', 'tauri.conf.json');
 
-const config = JSON.parse(readFileSync(source, 'utf8'));
+const config = JSON.parse(readFileSync(configPath, 'utf8'));
 
 config.bundle = { ...(config.bundle ?? {}), createUpdaterArtifacts: false };
 
@@ -31,5 +33,5 @@ for (const key of ['certificateThumbprint', 'signCommand', 'digestAlgorithm', 't
 }
 config.bundle.windows = windows;
 
-writeFileSync(target, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
-console.log(`wrote ${target}`);
+writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+console.log(`unsigned CI config written to ${configPath}`);

@@ -68,11 +68,11 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      - name: Prepare unsigned build config
+      - name: Strip code signing + updater signing (runner copy only)
         run: node .github/scripts/prepare-ci-config.mjs
 
       - name: Build
-        run: npx tauri build --config src-tauri/tauri.build.json
+        run: npx tauri build
 
       - name: List bundle output
         shell: bash
