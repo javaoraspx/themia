@@ -26,3 +26,6 @@ tests/e2e/.vite-harness.pid
 # The PNGs are committed on the WEBSITE side, not here.
 dist-shots/
 tests/shots/.vite-shots.pid
+
+# Local project notes (WorkBuddy memory) — never part of the source tree.
+.workbuddy/
