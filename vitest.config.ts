@@ -9,7 +9,11 @@ export default defineConfig({
   // telling you a plugin is missing. Only component tests pull in `.tsx`; the
   // pure-logic suites are unaffected, and the explicit `solid-js/*` aliases
   // below still win over the conditions this plugin adds.
-  plugins: [solid()],
+  //
+  // `hot: false` is required: the default injects solid-refresh for HMR, whose
+  // virtual module (`file:///@solid-refresh`) has no path a test runner can
+  // resolve, so the suite dies while being collected.
+  plugins: [solid({ hot: false })],
   // Mirror the vite.config build-time constant so modules that reference it
   // (e.g. license.ts gating its test hooks) load under vitest instead of
   // throwing `__THEMIA_TEST_HOOKS__ is not defined`. Tests run with hooks on.
