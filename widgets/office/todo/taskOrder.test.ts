@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder } from './taskOrder.ts';
+import { parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder, sinkCompleted } from './taskOrder.ts';
 
 const row = (id: string) => ({ id });
+const task = (id: string, status = 'notStarted') => ({ id, status });
 
 describe('parseTaskOrder [S-54]', () => {
   it('returns an empty list for a non-array', () => {
@@ -90,5 +91,44 @@ describe('sameOrder [S-54]', () => {
     expect(sameOrder(['a', 'b'], ['a', 'b'])).toBe(true);
     expect(sameOrder(['a', 'b'], ['b', 'a'])).toBe(false);
     expect(sameOrder(['a'], ['a', 'b'])).toBe(false);
+  });
+});
+
+describe('sinkCompleted [S-64]', () => {
+  it('moves completed rows below every active one, keeping both groups in order', () => {
+    const rows = [task('a'), task('b', 'completed'), task('c'), task('d', 'completed')];
+    expect(sinkCompleted(rows).map(r => r.id)).toEqual(['a', 'c', 'b', 'd']);
+  });
+
+  it('leaves a list with nothing completed untouched (same reference)', () => {
+    const rows = [task('a'), task('b')];
+    expect(sinkCompleted(rows)).toBe(rows);
+  });
+
+  it('leaves an already-sunk list untouched (same reference)', () => {
+    const rows = [task('a'), task('b', 'completed'), task('c', 'completed')];
+    expect(sinkCompleted(rows)).toBe(rows);
+  });
+
+  it('handles a fully completed list and an empty one', () => {
+    const all = [task('a', 'completed'), task('b', 'completed')];
+    expect(sinkCompleted(all).map(r => r.id)).toEqual(['a', 'b']);
+    const empty: ReturnType<typeof task>[] = [];
+    expect(sinkCompleted(empty)).toBe(empty);
+  });
+
+  it('runs AFTER the dragged arrangement, so the active rows keep that order [S-54]', () => {
+    const rows = [task('a'), task('b', 'completed'), task('c')];
+    const arranged = applyTaskOrder(rows, ['c', 'b', 'a']);
+    expect(sinkCompleted(arranged).map(r => r.id)).toEqual(['c', 'a', 'b']);
+  });
+
+  it('puts a row that was just ticked below the ones still to do', () => {
+    // What the toggle hands the row on the next derivation: same list, the
+    // ticked row now reads `completed`.
+    const before = [task('a'), task('b'), task('c')];
+    const after = [task('a'), task('b', 'completed'), task('c')];
+    expect(before.map(r => r.id)).toEqual(['a', 'b', 'c']);
+    expect(sinkCompleted(after).map(r => r.id)).toEqual(['a', 'c', 'b']);
   });
 });

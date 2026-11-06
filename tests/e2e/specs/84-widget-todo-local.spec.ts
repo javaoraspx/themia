@@ -152,6 +152,19 @@ describe('widget: To Do (local storage)', () => {
     expect(header.count).to.equal('1'); // the completed one doesn't count
   });
 
+  // [S-64] A finished task stops competing for the eye: it is drawn after every
+  // task still to do, wherever it happens to sit in storage.
+  it('[S-64] completed tasks sink below the active ones', async () => {
+    await seedTodoLocal([
+      { id: 'b', title: 'Already done', done: true },
+      { id: 'a', title: 'Still to do', done: false },
+      { id: 'c', title: 'Also done', done: true },
+    ], { showCompleted: true });
+    expect(await renderedTitles()).to.deep.equal(['Still to do', 'Already done', 'Also done']);
+    // Storage is display-ordered only at render time: the array is untouched.
+    expect((await storedTasks()).map(t => t.id)).to.deep.equal(['b', 'a', 'c']);
+  });
+
   // [S-58] A widget pointing at a list that isn't there must not fall through to
   // some other list — an empty prompt is better than someone else's tasks.
   it('[S-58] a missing or unset list shows the pick-a-list prompt, not another list', async () => {

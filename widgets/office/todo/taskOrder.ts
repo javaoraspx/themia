@@ -10,6 +10,9 @@
 // order doesn't know about follows in the backend's own order. That is what puts
 // a NEWLY created task at the BOTTOM ([S-55]) without a second mechanism — it is
 // simply an id the order has never seen.
+//
+// On top of that arrangement, COMPLETED rows are sunk to the bottom ([S-64]) as
+// a display-only pass — see `sinkCompleted`.
 
 /** Narrow an untrusted config value to a validated id list. A non-array
  *  (absent/corrupt) yields `[]`; non-string entries are dropped rather than
@@ -78,4 +81,37 @@ export function rowIndexAtY(rects: readonly { top: number; bottom: number }[], y
  *  when this is false. */
 export function sameOrder(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+/**
+ * Sink every COMPLETED row to the bottom ([S-64]), keeping both groups in the
+ * order they arrived in. A task that has been ticked off has stopped competing
+ * for the eye with the ones still to do, so it belongs after them — the same
+ * place Microsoft To Do and most task apps put it.
+ *
+ * This is a DISPLAY rule, not another storage write: it runs after the user's
+ * arrangement ([S-54]) has been applied, so the dragged order of the ACTIVE
+ * tasks survives untouched and a task that is un-ticked returns to the slot it
+ * was arranged in. Ticking a box therefore costs no config write and no
+ * cross-window broadcast — it just re-derives the list, like any other
+ * reactive change.
+ *
+ * Stable on both sides: completed rows keep their relative order among
+ * themselves, so a reorder inside the sunk group ([S-54]) still reads back the
+ * way it was dragged. Returns the INPUT array when there is nothing to move
+ * (no completed row, or the list is already sunk) so an unchanged list keeps
+ * its identity for the memo.
+ */
+export function sinkCompleted<T extends { status: string }>(rows: T[]): T[] {
+  let firstDone = -1;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].status === 'completed') { firstDone = i; break; }
+  }
+  if (firstDone < 0) return rows; // nothing completed
+  const active: T[] = [];
+  const done: T[] = [];
+  for (const row of rows) (row.status === 'completed' ? done : active).push(row);
+  // Every completed row already sits after every active one — leave it alone.
+  if (firstDone === active.length) return rows;
+  return [...active, ...done];
 }

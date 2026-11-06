@@ -1,0 +1,88 @@
+name: Build Windows installer
+
+# Manual on purpose. This exists so a fork can produce an installer WITHOUT a
+# local Windows/Rust toolchain, and it costs minutes only when someone asks for
+# a build — it is deliberately not wired to `push`, so a session of small
+# commits never burns runner time.
+#
+# The generated installer is UNSIGNED (see .github/scripts/prepare-ci-config.mjs
+# for what is stripped and why), so SmartScreen will warn on first launch:
+# "More info" → "Run anyway".
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Faster, but the cache below is what actually makes repeat builds cheap.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # Gate the (expensive) compile behind the cheap checks.
+  check:
+    name: Check (typecheck, unit tests)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - run: npm run typecheck
+
+      # Lint is reported but does not gate the installer: this is a fork of
+      # upstream's tree, and a pre-existing lint complaint must not be able to
+      # block a build that is only wanted to try a behaviour change.
+      - run: npm run lint
+        continue-on-error: true
+
+      - run: npm run test:unit
+
+  build:
+    name: Build installer (unsigned NSIS)
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Caches ~/.cargo + the workspace `target/` dir keyed on Cargo.lock, so a
+      # rebuild after a frontend-only change does not recompile the world.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Prepare unsigned build config
+        run: node .github/scripts/prepare-ci-config.mjs
+
+      - name: Build
+        run: npx tauri build --config src-tauri/tauri.build.json
+
+      - name: List bundle output
+        shell: bash
+        run: ls -la target/release/bundle/nsis/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: themia-windows-installer
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/themia.exe
+          if-no-files-found: error
+          retention-days: 14

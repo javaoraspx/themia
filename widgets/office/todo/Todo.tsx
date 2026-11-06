@@ -19,7 +19,7 @@ import {
 } from './localTasks.ts';
 import { findList } from './localLists.ts';
 import { localLists, setLocalListTasks, seedLocalList } from './localListStore.ts';
-import { parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder } from './taskOrder.ts';
+import { parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder, sinkCompleted } from './taskOrder.ts';
 import { resolveDue, isDuePast } from './dueDate.ts';
 import { isTodayList, todayTasks, todayDueDate } from './todayList.ts';
 import { clampTitleLines } from './titleLines.ts';
@@ -174,11 +174,16 @@ export default function Todo(props: TodoProps) {
   // stored order (the array IS the order); account rows go through the id list
   // in config, which also puts a task the order has never seen — a brand new
   // one — at the BOTTOM ([S-55]).
+  // [S-64] …and finally SUNK: completed tasks are shown after every active one,
+  // in both modes. A display rule, so ticking a box writes nothing and the
+  // arrangement of the active tasks (and a task's own slot when it is un-ticked)
+  // survives. Local mode reaches it through `localToDisplay`, which maps `done`
+  // onto the same `status` this reads.
   const taskOrder = createMemo(() => parseTaskOrder(props.taskOrder));
   const displayTasks = createMemo<TodoTask[]>(() => {
-    if (isLocal()) return visibleLocalTasks(localList(), showCompleted()).map(localToDisplay);
+    if (isLocal()) return sinkCompleted(visibleLocalTasks(localList(), showCompleted()).map(localToDisplay));
     const rows = isToday() ? todayTasks(tasks()) : tasks();
-    return applyTaskOrder(rows, taskOrder());
+    return sinkCompleted(applyTaskOrder(rows, taskOrder()));
   });
 
   // Which render block to show. A local widget with a list is always "loaded"
@@ -444,7 +449,12 @@ export default function Todo(props: TodoProps) {
           if (target && target.id !== id) {
             const byId = new Map(list.map(tk => [tk.id, tk]));
             const ids = moveId(list.map(tk => tk.id), id, target.id);
-            setDragRows(ids.map(i => byId.get(i)).filter((tk): tk is TodoTask => !!tk));
+            // [S-64] The in-flight preview is sunk exactly like the settled
+            // list, so dragging a completed row can never lift it into the
+            // active block and then have it snap back on release. It still
+            // reorders freely *within* the sunk group, which is the only place
+            // its position is meaningful.
+            setDragRows(sinkCompleted(ids.map(i => byId.get(i)).filter((tk): tk is TodoTask => !!tk)));
           }
         }
       }
