@@ -258,6 +258,12 @@ input[type="search"], input[type="email"], textarea { cursor: text; }
   display: inline-flex; align-items: center; gap: 4px;
 }
 .design-btn:hover:not(:disabled) { background: var(--overlay-hover); border-color: var(--ring); }
+/* [S-02] A design button that cannot be pressed says so, with the same
+   treatment every other control in this family uses. The rule used to exist only
+   on the edit bar's update button; removing that button (this fork has no
+   updater) left `.design-btn` without one, which the settings-controls test
+   catches as a hole in the family rather than as a missing button. */
+.design-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .design-btn.primary { background: var(--primary); color: var(--primary-foreground, var(--foreground)); border-color: var(--primary); font-weight: 600; }
 .design-btn.primary:hover { background: color-mix(in srgb, var(--primary) 85%, white); border-color: color-mix(in srgb, var(--primary) 85%, white); }
 
