@@ -1,5 +1,4 @@
 import { createSignal, createEffect, createMemo, onMount, onCleanup, Show, Switch, Match, For, type Accessor, type JSX } from 'solid-js';
-import type { UpdateInfo } from '../updater.ts';
 import { globalDesign, resolvedTheme } from '../design.ts';
 import { totalWidgetCount } from '../layout.ts';
 import { viewStore, defaultNewDisplayView, setDefaultViewForNewDisplays } from '../views.ts';
@@ -10,7 +9,6 @@ import { loadSystemFonts } from '../systemFonts.ts';
 import { invoke } from '../ipc.ts';
 import { parseAutostartError, type AutostartError } from '../autostartError.ts';
 import { watchDesktopIcons } from '../desktopIcons.ts';
-import { checkForUpdate, installUpdate } from '../updater.ts';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Settings, Palette, Crown, Users, Monitor, Moon, Sun, Download, Upload, Bug, Lightbulb, Check, Eye, EyeOff, ScrollText, Trash2, Copy, FolderOpen, Mail, Share2, History, ChevronRight, Square, SquareDashed, SquareDot, Ban, CircleX, TriangleAlert, Info, ListFilter, Blend, Scaling, MoveUp, MoveHorizontal, MoveVertical, FlipVertical, Aperture, Power, Rocket, Terminal, Play, Droplets, BookOpen, Sparkles, SlidersHorizontal } from 'lucide-solid';
 import type { LucideIcon } from 'lucide-solid';
@@ -269,16 +267,10 @@ interface SettingsBodyProps {
   setGlobalDesign: <K extends keyof GlobalDesign>(key: K, value: GlobalDesign[K]) => void;
   autostart: Accessor<boolean>;
   setAutostart: (v: boolean) => void;
-  autoCheckUpdates: Accessor<boolean>;
-  setAutoCheckUpdates: (v: boolean) => void;
   analyticsEnabled: Accessor<boolean>;
   setAnalyticsEnabled: (v: boolean) => void;
   winLabel: string;
   appVersion: Accessor<string>;
-  updateAvail: Accessor<UpdateInfo | null>;
-  setUpdateAvail: (v: UpdateInfo | null) => void;
-  updateStatus: Accessor<'idle' | 'downloading' | 'done' | 'error'>;
-  setUpdateStatus: (v: 'idle' | 'downloading' | 'done' | 'error') => void;
 }
 
 // The App Settings content panel for the unified config window. Renders the
@@ -287,13 +279,6 @@ interface SettingsBodyProps {
 export default function SettingsBody(props: SettingsBodyProps) {
   const activePage = props.activePage;
 
-  const updateAvail = () => props.updateAvail();
-  const setUpdateAvail = props.setUpdateAvail;
-  const updateStatus = () => props.updateStatus();
-  const setUpdateStatus = props.setUpdateStatus;
-  const [checkingUpdate, setCheckingUpdate] = createSignal(false);
-  const [checkedOnce, setCheckedOnce] = createSignal(!!props.updateAvail());
-  const [updateError, setUpdateError] = createSignal<string | null>(null);
   // [AS-05] Last failed "Launch on startup" flip, shown inline under the row
   // until the next successful flip. Transient UI state, not persisted: the
   // remedy is acted on outside Themia, so re-opening Settings should show a
@@ -366,8 +351,6 @@ export default function SettingsBody(props: SettingsBodyProps) {
     loadAccounts();
     // Installed fonts for the font picker (issue #64); best-effort, non-blocking.
     loadSystemFonts().then(setSystemFonts);
-    // If App already checked and found an update, mark as checked
-    if (props.updateAvail()) setCheckedOnce(true);
     // [AS-06] Dry-run the autostart permission so the warning is already there
     // when the user arrives, rather than only after a click that does nothing
     // visible (#69/#79). The toggle stays enabled either way: the remedy is to
@@ -552,21 +535,6 @@ export default function SettingsBody(props: SettingsBodyProps) {
               </div>
             )}
           </Show>
-          <div class="design-row">
-            <div class="design-left">
-              <span class="design-label">{t('settings.autoUpdates.label')}</span>
-              <span class="design-desc">{t('settings.autoUpdates.desc')}</span>
-            </div>
-            <ToggleSwitch
-              checked={props.autoCheckUpdates()}
-              onLabel={t('toggle.enabled')}
-              offLabel={t('toggle.disabled')}
-              onChange={(next) => {
-                props.setAutoCheckUpdates(next);
-                localStorage.setItem('themia-auto-check-updates', String(next));
-              }}
-            />
-          </div>
           <div class="design-row">
             <div class="design-left">
               <span class="design-label">{t('settings.defaultView.label')}</span>
@@ -1399,61 +1367,13 @@ export default function SettingsBody(props: SettingsBodyProps) {
         </Match>
 
         <Match when={activePage() === 'updates'}>
-          {/* ── Updates ── */}
-          <div class="update-row" classList={{ 'has-update': !!updateAvail(), 'error': !updateAvail() && checkedOnce() && !checkingUpdate() && !!updateError() }}>
+          {/* This build carries no updater: nothing to check, nothing to
+              install, so the row is the version and only the version. The
+              newsletter and changelog below stay — they are about the release,
+              not about replacing the app under the user. */}
+          <div class="update-row">
             <div class="update-info">
               <span class="update-version">Themia v{props.appVersion()}</span>
-              <span class="update-status">
-                <Show when={updateAvail()}>
-                  <Show when={updateStatus() === 'idle'}>
-                    {t('settings.about.updateReady', { version: updateAvail()!.version })}
-                  </Show>
-                  <Show when={updateStatus() === 'downloading'}>
-                    {t('settings.about.downloading')}
-                  </Show>
-                  <Show when={updateStatus() === 'done'}>
-                    {t('settings.about.restartToFinish')}
-                  </Show>
-                  <Show when={updateStatus() === 'error'}>
-                    {t('settings.about.updateFailed')}
-                  </Show>
-                </Show>
-                <Show when={!updateAvail() && checkingUpdate()}>
-                  {t('settings.about.checking')}
-                </Show>
-                <Show when={!updateAvail() && !checkingUpdate() && checkedOnce() && !updateError()}>
-                  {t('settings.about.upToDateShort')}
-                </Show>
-                <Show when={!updateAvail() && !checkingUpdate() && checkedOnce() && updateError()}>
-                  {t('settings.about.checkFailed')}
-                </Show>
-                <Show when={!updateAvail() && !checkingUpdate() && !checkedOnce()}>
-                  {t('settings.about.notChecked')}
-                </Show>
-              </span>
-            </div>
-            <div class="update-action">
-              <Show when={updateAvail() && updateStatus() === 'idle'}>
-                <button class="btn-primary" onClick={async () => {
-                  setUpdateStatus('downloading');
-                  try {
-                    await installUpdate();
-                    setUpdateStatus('done');
-                  } catch { setUpdateStatus('error'); }
-                }}><Download size={13} strokeWidth={1.5} /> {t('settings.about.installVersion', { version: updateAvail()!.version })}</button>
-              </Show>
-              <Show when={!updateAvail()}>
-                <button class="btn-secondary" disabled={checkingUpdate()} onClick={async () => {
-                  setCheckingUpdate(true);
-                  setUpdateError(null);
-                  try {
-                    const update = await checkForUpdate();
-                    if (update) setUpdateAvail(update);
-                  } catch (e) { setUpdateError(String(e)); }
-                  setCheckingUpdate(false);
-                  setCheckedOnce(true);
-                }}>{t('settings.about.checkForUpdates')}</button>
-              </Show>
             </div>
           </div>
 

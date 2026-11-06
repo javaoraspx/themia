@@ -19,7 +19,7 @@ import {
 } from './localTasks.ts';
 import { findList } from './localLists.ts';
 import { localLists, setLocalListTasks, seedLocalList } from './localListStore.ts';
-import { parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder, sinkCompleted } from './taskOrder.ts';
+import { parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder, sinkCompleted, freezeAt } from './taskOrder.ts';
 import { resolveDue, isDuePast } from './dueDate.ts';
 import { isTodayList, todayTasks, todayDueDate } from './todayList.ts';
 import { clampTitleLines } from './titleLines.ts';
@@ -85,6 +85,18 @@ function formatDue(iso: string | null): string {
 function duePast(iso: string | null): boolean {
   return isDuePast(iso);
 }
+
+// [S-65] Presentation timings for a tick's settle. They live here, not in CSS,
+// because the glide's duration is written onto the row inline (the row cannot
+// carry a class per duration) — one source, so the beat and the fade cannot
+// drift from the glide they are part of.
+/** How long the ticked row stays where it is, so the tick is seen at the spot
+ *  the user clicked. */
+const SETTLE_DWELL_MS = 380;
+/** How long a row that is leaving the list fades before the others close up. */
+const SETTLE_FADE_MS = 150;
+/** The glide itself. */
+const SETTLE_GLIDE_MS = 260;
 
 /** [S-50] Size the title editor to its content, so a long title is fully
  *  visible while it is being edited (the display clamps, the editor never
@@ -179,11 +191,18 @@ export default function Todo(props: TodoProps) {
   // arrangement of the active tasks (and a task's own slot when it is un-ticked)
   // survives. Local mode reaches it through `localToDisplay`, which maps `done`
   // onto the same `status` this reads.
+  // [S-65] …except a row that is still SETTLING, which is drawn at the slot it
+  // was frozen in until its beat is over — that is what makes the tick visible
+  // where it happened instead of teleporting the row. The frozen row is also
+  // what keeps a completed-but-fading row on screen while `showCompleted` is off
+  // ([S-46]).
   const taskOrder = createMemo(() => parseTaskOrder(props.taskOrder));
   const displayTasks = createMemo<TodoTask[]>(() => {
-    if (isLocal()) return sinkCompleted(visibleLocalTasks(localList(), showCompleted()).map(localToDisplay));
-    const rows = isToday() ? todayTasks(tasks()) : tasks();
-    return sinkCompleted(applyTaskOrder(rows, taskOrder()));
+    const held = heldSlots();
+    const arranged = isLocal()
+      ? visibleLocalTasks(localList(), showCompleted(), held).map(localToDisplay)
+      : applyTaskOrder(isToday() ? todayTasks(tasks()) : tasks(), taskOrder());
+    return freezeAt(sinkCompleted(arranged), held);
   });
 
   // Which render block to show. A local widget with a list is always "loaded"
@@ -322,8 +341,23 @@ export default function Todo(props: TodoProps) {
   const writeListId = (task: TodoTask) => task.list_id || props.listId || '';
 
   async function toggleTask(task: TodoTask) {
-    if (isLocal()) { writeLocal(toggleLocalTask(localList(), task.id)); return; }
-    const newStatus = task.status === 'completed' ? 'notStarted' : 'completed';
+    const completing = task.status !== 'completed';
+    // [S-65] Freeze the row where the eye last saw it. Ticking changes the box
+    // AND the row's place ([S-64]) in the same frame, which made the tick land
+    // somewhere the user was not looking — or, with completed tasks hidden, made
+    // the row vanish under the click. The freeze buys the beat that shows what
+    // was ticked; `settle` then lets it go.
+    holdRow(task.id, Math.max(0, rows().findIndex(r => r.id === task.id)));
+    const leaving = completing && !showCompleted();
+
+    if (isLocal()) {
+      writeLocal(toggleLocalTask(localList(), task.id));
+      // Local state is synchronous, so the beat can start at once.
+      settle(task.id, { leaving });
+      return;
+    }
+
+    const newStatus = completing ? 'completed' : 'notStarted';
     // Optimistic update
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t));
 
@@ -334,14 +368,18 @@ export default function Todo(props: TodoProps) {
         taskId: task.id,
         status: newStatus,
       });
-      // If hiding completed and we just completed a task, remove it after a brief delay
-      if (!showCompleted() && newStatus === 'completed') {
-        setTimeout(() => {
-          setTasks(prev => prev.filter(t => t.id !== task.id));
-        }, 600);
-      }
+      // [S-26] Completing with completed tasks hidden has to remove the row from
+      // the list. It goes through the same beat and fades first, rather than
+      // disappearing out from under the cursor.
+      settle(task.id, {
+        leaving,
+        drop: leaving ? () => setTasks(prev => prev.filter(t => t.id !== task.id)) : undefined,
+      });
     } catch {
-      // Revert
+      // Revert, and let go of the row at once: an animation for a write that
+      // failed would only claim something happened.
+      cancelSettle(task.id);
+      releaseRow(task.id);
       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: task.status } : t));
     }
   }
@@ -477,6 +515,133 @@ export default function Todo(props: TodoProps) {
     polling = true;
     const gen = generation;
     runDragPoll(gen).catch(() => resetDrag());
+  }
+
+  // ── Settling: the tick's beat, then the glide ([S-65]) ─────────────────────
+  // Ticking a task changes TWO things at once — the box fills, and the row
+  // changes place ([S-64]). Applied in the same frame they cancel each other
+  // out: the tick is over before the eye finds the row, and with completed tasks
+  // hidden the row simply vanished under the cursor. So the ticked row is FROZEN
+  // at the slot it occupied (`heldSlots`), released after a beat, and every row
+  // that then has to move GLIDES to its new place from where it was (FLIP, since
+  // the rows have content-sized heights and cannot be height-animated). A row
+  // that is about to leave the list fades before it goes.
+  const [heldSlots, setHeldSlots] = createSignal<ReadonlyMap<string, number>>(new Map());
+  const [leavingIds, setLeavingIds] = createSignal<ReadonlySet<string>>(new Set());
+  /** Pending timers per task, so a second click — or an unmount — cancels the beat. */
+  const settleTimers = new Map<string, number[]>();
+  /** Bumped by every glide, so a stale cleanup cannot clear a newer one. */
+  let glideGen = 0;
+
+  function prefersReducedMotion(): boolean {
+    try {
+      return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch {
+      return false; // ignore: no matchMedia in the picker preview / dev harness
+    }
+  }
+
+  function cancelSettle(id: string): void {
+    const timers = settleTimers.get(id);
+    if (timers) { for (const t of timers) clearTimeout(t); settleTimers.delete(id); }
+    setLeavingIds(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev); next.delete(id);
+      return next;
+    });
+  }
+
+  /** Pin `id` to `index` — its slot on screen right now — until it is released. */
+  function holdRow(id: string, index: number): void {
+    cancelSettle(id);
+    setHeldSlots(prev => new Map(prev).set(id, index));
+  }
+
+  function releaseRow(id: string): void {
+    setHeldSlots(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Map(prev); next.delete(id);
+      return next;
+    });
+    setLeavingIds(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev); next.delete(id);
+      return next;
+    });
+  }
+
+  /** Where every row is right now, in list coordinates.
+   *
+   *  Inline transforms from a glide still in flight are cleared FIRST: measuring
+   *  a row mid-animation would fold its offset into the number we are about to
+   *  use as a starting point, and the row would jump by exactly that much. */
+  function measureRows(): Map<string, number> {
+    for (const el of rowEls.values()) { el.style.transition = 'none'; el.style.transform = ''; }
+    const origin = listEl?.getBoundingClientRect().top ?? 0;
+    const tops = new Map<string, number>();
+    for (const [id, el] of rowEls) tops.set(id, el.getBoundingClientRect().top - origin);
+    for (const el of rowEls.values()) el.style.transition = '';
+    return tops;
+  }
+
+  /** Play the difference between `before` and where the rows are now. */
+  function glide(before: Map<string, number>): void {
+    // A drag owns the rows' positions; two mechanisms moving them would fight.
+    if (polling || dragId()) return;
+    const gen = ++glideGen;
+    const origin = listEl?.getBoundingClientRect().top ?? 0;
+    const moves: { el: HTMLElement; dy: number }[] = [];
+    for (const [id, el] of rowEls) {
+      const was = before.get(id);
+      if (was === undefined) continue; // not on screen before; nothing to travel from
+      const dy = was - (el.getBoundingClientRect().top - origin);
+      if (Math.abs(dy) >= 0.5) moves.push({ el, dy });
+    }
+    if (!moves.length) return;
+    for (const { el, dy } of moves) {
+      el.style.transition = 'none';
+      el.style.transform = `translateY(${dy}px)`;
+      void el.offsetHeight; // commit the offset before the transition is armed
+    }
+    requestAnimationFrame(() => {
+      if (gen !== glideGen) return;
+      for (const { el } of moves) {
+        el.style.transition = `transform ${SETTLE_GLIDE_MS}ms cubic-bezier(0.2, 0.7, 0.3, 1)`;
+        el.style.transform = '';
+      }
+      // Timed cleanup rather than `transitionend`: one listener per row that can
+      // be missed (a row removed mid-glide never fires it) is how the inline
+      // transition ends up outliving the animation and swallowing the hover.
+      window.setTimeout(() => {
+        if (gen !== glideGen) return; // a newer glide owns these elements now
+        for (const { el } of moves) { el.style.transition = ''; el.style.transform = ''; }
+      }, SETTLE_GLIDE_MS + 40);
+    });
+  }
+
+  /** The beat: hold, optionally fade, then release and glide.
+   *
+   *  `drop` removes the row from the data (account mode with completed hidden);
+   *  it runs in the same tick as the release, so the rows below move up in the
+   *  same frame the fading row goes — one gesture, not two. */
+  function settle(id: string, opts: { leaving?: boolean; drop?: () => void }): void {
+    cancelSettle(id);
+    if (prefersReducedMotion()) { opts.drop?.(); releaseRow(id); return; }
+
+    const timers: number[] = [];
+    const release = (): void => {
+      const before = measureRows();
+      opts.drop?.();
+      releaseRow(id);
+      settleTimers.delete(id);
+      requestAnimationFrame(() => glide(before));
+    };
+    const fade = (): void => {
+      setLeavingIds(prev => new Set(prev).add(id));
+      timers.push(window.setTimeout(release, SETTLE_FADE_MS));
+    };
+    timers.push(window.setTimeout(opts.leaving ? fade : release, SETTLE_DWELL_MS));
+    settleTimers.set(id, timers);
   }
 
   // ── Rename ([S-50]) ────────────────────────────────────────────────────────
@@ -730,6 +895,9 @@ export default function Todo(props: TodoProps) {
     _kbd?.dispose();
     document.removeEventListener('mousedown', handleGlobalMouseDown);
     _cleanupBlur?.();
+    // A beat that outlives the widget would animate rows that no longer exist.
+    for (const timers of settleTimers.values()) for (const t of timers) clearTimeout(t);
+    settleTimers.clear();
   });
   function activateKbd(e: MouseEvent): void { if (e.button === 0) _kbd?.activate(); }
 
@@ -742,8 +910,10 @@ export default function Todo(props: TodoProps) {
     <div
       class="todo-widget"
       onMouseDown={activateKbd}
-      /* [S-49] One variable drives the clamp for every row. */
-      style={{ '--todo-title-lines': String(titleLines()) }}
+      /* [S-49] One variable drives the clamp for every row. [S-65] The fade of a
+         leaving row is timed from the same constant as the beat, so the two
+         cannot drift. */
+      style={{ '--todo-title-lines': String(titleLines()), '--todo-settle-fade': `${SETTLE_FADE_MS}ms` }}
     >
       <WidgetHeader
         mode={props.headerMode ?? 'normal'}
@@ -803,7 +973,13 @@ export default function Todo(props: TodoProps) {
             {(task, i) => (
               <div
                 class={`todo-item ${viewMode() === 'compact' ? 'compact' : ''} ${task.status === 'completed' ? 'done' : ''} ${focusedIdx() === i() ? 'kbd-focused' : ''}`}
-                classList={{ dragging: dragId() === task.id }}
+                classList={{
+                  dragging: dragId() === task.id,
+                  // [S-65] The row just ticked: it is being held in place for
+                  // the beat, and then (if it cannot stay) faded on its way out.
+                  settling: heldSlots().has(task.id),
+                  leaving: leavingIds().has(task.id),
+                }}
                 ref={(el) => { rowEls.set(task.id, el); onCleanup(() => rowEls.delete(task.id)); }}
                 onContextMenu={(e) => handleTaskCtx(e, task)}
                 onMouseDown={(e) => onRowMouseDown(e, task)}

@@ -178,11 +178,6 @@ input[type="search"], input[type="email"], textarea { cursor: text; }
   background: var(--primary); color: var(--primary-foreground, var(--foreground)); font-weight: 600;
 }
 .edit-bar-right .design-btn.primary:hover { background: color-mix(in srgb, var(--primary) 85%, white); }
-.edit-bar-right .design-btn.update-btn {
-  background: var(--primary-subtle-bg); color: var(--primary); font-weight: 600;
-}
-.edit-bar-right .design-btn.update-btn:hover:not(:disabled) { background: var(--primary-subtle-border); }
-
 .grid-control { display: flex; align-items: center; gap: 8px; }
 
 /* Grid-snap toggle: sits as a ghost chip in the edit bar. */
@@ -265,10 +260,6 @@ input[type="search"], input[type="email"], textarea { cursor: text; }
 .design-btn:hover:not(:disabled) { background: var(--overlay-hover); border-color: var(--ring); }
 .design-btn.primary { background: var(--primary); color: var(--primary-foreground, var(--foreground)); border-color: var(--primary); font-weight: 600; }
 .design-btn.primary:hover { background: color-mix(in srgb, var(--primary) 85%, white); border-color: color-mix(in srgb, var(--primary) 85%, white); }
-.design-btn.update-btn { background: color-mix(in srgb, var(--primary) 15%, transparent); color: var(--primary); border-color: color-mix(in srgb, var(--primary) 30%, transparent); font-weight: 600; }
-.design-btn.update-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--primary) 25%, transparent); }
-.design-btn.update-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
 
 /* ── Views bar ── */
 .views-bar {
@@ -1310,51 +1301,3 @@ input[type="search"], input[type="email"], textarea { cursor: text; }
 }
 .game-mode-badge svg { flex-shrink: 0; }
 
-/* [S-35] "A newer version is out" pill. Deliberately quiet: same glass chrome
-   as the other badges, with the accent reserved for the icon so it reads as a
-   notice, not an alert. Opens Settings -> Updates; the X silences this version. */
-.update-badge {
-  display: flex;
-  align-items: stretch;
-  border-radius: var(--radius);
-  background: var(--card);
-  border: 1px solid var(--border);
-  backdrop-filter: blur(60px) saturate(180%);
-  -webkit-backdrop-filter: blur(60px) saturate(180%);
-  overflow: hidden;
-  user-select: none;
-  /* Opacity ONLY, never a transform: the pass-through mask ([S-17]) measures
-     chrome with getBoundingClientRect, which folds a transform in. A sliding
-     entrance would be sampled mid-animation and leave the clickable region
-     offset from the pill until some unrelated push re-measured it. */
-  animation: update-badge-in 0.22s ease-out;
-}
-.update-badge button {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  background: transparent;
-  border: none;
-  font-family: inherit;
-  font-size: calc(11px * var(--font-scale, 1));
-  font-weight: 500;
-  color: var(--foreground);
-  transition: background 0.12s;
-}
-.update-badge button:hover { background: var(--card-hover); }
-.update-badge-open svg { flex-shrink: 0; color: var(--primary); }
-.update-badge .update-badge-dismiss {
-  padding: 6px 8px;
-  color: var(--subtle-foreground);
-  border-left: 1px solid var(--border);
-}
-.update-badge-dismiss:hover { color: var(--foreground); }
-
-@keyframes update-badge-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .update-badge { animation: none; }
-}

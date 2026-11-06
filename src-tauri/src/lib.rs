@@ -906,226 +906,6 @@ async fn newsletter_subscribe(email: String) -> Result<(), String> {
     widget_license::subscribe_newsletter(&email).await
 }
 
-// ---------------------------------------------------------------------------
-// Updater commands
-// ---------------------------------------------------------------------------
-//
-// The app owns the update check and install rather than calling
-// `tauri-plugin-updater`'s own IPC commands, so the updater traverses the
-// Windows proxy like every other outbound request (netproxy SPEC [PX-09]).
-//
-// The plugin builds its reqwest client *inside* `Updater::check` and
-// `Update::download`, and the only seams reachable from outside are
-// `UpdaterBuilder::proxy`/`no_proxy` and the `proxy`/`no_proxy` fields on the
-// resulting `Update`. Reaching them means owning the commands. The plugin's own
-// IPC commands are not granted in `capabilities/default.json`, so this is the
-// only path from the frontend.
-
-/// What the frontend needs to offer an update. Deliberately not the plugin's
-/// full metadata: the release notes shown in Settings come from the bundled
-/// `changelog.ts`, not from the manifest.
-#[derive(serde::Serialize)]
-struct UpdateInfo {
-    version: String,
-}
-
-/// The update found by the last `updater_check`, awaiting the user's click.
-///
-/// A process-wide static rather than Tauri state, matching how the rest of this
-/// file holds singletons - and exactly one update can be pending at a time.
-fn pending_update() -> &'static std::sync::Mutex<Option<tauri_plugin_updater::Update>> {
-    use std::sync::{Mutex, OnceLock};
-    static PENDING: OnceLock<Mutex<Option<tauri_plugin_updater::Update>>> = OnceLock::new();
-    PENDING.get_or_init(|| Mutex::new(None))
-}
-
-/// Poison-recovering guard for [`pending_update`]. The value is replaced
-/// wholesale on every write, so a panic elsewhere cannot leave half an `Update`
-/// behind - refusing to check for updates because of one would be worse.
-fn lock_pending() -> std::sync::MutexGuard<'static, Option<tauri_plugin_updater::Update>> {
-    match pending_update().lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-/// The first configured updater endpoint, as the URL to ask the proxy about.
-///
-/// Read from the same `tauri.conf.json` the plugin itself reads, so the address
-/// we resolve a proxy for and the address that gets fetched cannot drift apart.
-fn updater_endpoint(
-    plugins: &std::collections::HashMap<String, serde_json::Value>,
-) -> Option<url::Url> {
-    let raw = plugins
-        .get("updater")?
-        .get("endpoints")?
-        .as_array()?
-        .first()?
-        .as_str()?;
-    match url::Url::parse(raw) {
-        Ok(u) => Some(u),
-        Err(e) => {
-            log::warn!("updater: endpoint '{raw}' is not a URL ({e}); resolving as direct");
-            None
-        }
-    }
-}
-
-/// The proxy fields the updater must carry for a resolver verdict, as
-/// `(proxy, no_proxy)` ([PX-09]).
-///
-/// DIRECT is `no_proxy = true`, never "leave it unset": unset lets reqwest sniff
-/// out a proxy of its own, which is a second resolver free to disagree with
-/// [PX-01]. Shared by the check and the download so the two cannot drift.
-fn updater_proxy_fields(target: widget_netproxy::ProxyTarget) -> (Option<url::Url>, bool) {
-    match target {
-        widget_netproxy::ProxyTarget::Direct => (None, true),
-        widget_netproxy::ProxyTarget::Proxy(p) => (Some(p), false),
-    }
-}
-
-/// Resolve the Windows proxy for `url` without blocking the async runtime.
-///
-/// `widget_netproxy::resolve` is blocking on a cache miss ([PX-04]): answering
-/// the "Automatic proxy setup" box can mean fetching a PAC script and running
-/// its JavaScript. `None` (no endpoint to ask about) is DIRECT, per [PX-05].
-async fn resolve_proxy(url: Option<url::Url>) -> widget_netproxy::ProxyTarget {
-    let Some(url) = url else {
-        return widget_netproxy::ProxyTarget::Direct;
-    };
-    tauri::async_runtime::spawn_blocking(move || widget_netproxy::resolve(&url))
-        .await
-        .unwrap_or_else(|e| {
-            log::warn!("updater: proxy resolution task failed ({e}); going direct");
-            widget_netproxy::ProxyTarget::Direct
-        })
-}
-
-#[tauri::command]
-async fn updater_check(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
-    use tauri_plugin_updater::UpdaterExt;
-
-    let endpoint = updater_endpoint(&app.config().plugins.0);
-    let (proxy, no_proxy) = updater_proxy_fields(resolve_proxy(endpoint).await);
-
-    let mut builder = app.updater_builder();
-    if no_proxy {
-        builder = builder.no_proxy();
-    }
-    if let Some(p) = proxy {
-        log::info!("updater: checking via proxy {p}");
-        builder = builder.proxy(p);
-    }
-
-    let updater = builder.build().map_err(|e| e.to_string())?;
-    let found = updater.check().await.map_err(|e| e.to_string())?;
-
-    let info = found.as_ref().map(|u| UpdateInfo {
-        version: u.version.clone(),
-    });
-    *lock_pending() = found;
-    Ok(info)
-}
-
-#[tauri::command]
-async fn updater_install() -> Result<(), String> {
-    // Clone out from under the lock: the download is long and awaits.
-    let Some(mut update) = lock_pending().clone() else {
-        return Err("No update available; check for one first".to_string());
-    };
-
-    // Ask again for the package URL rather than reusing the manifest's answer:
-    // the two can live on different hosts (GitHub serves release downloads from
-    // a separate domain), and a PAC script is entitled to route them apart.
-    let verdict = resolve_proxy(Some(update.download_url.clone())).await;
-    let (proxy, no_proxy) = updater_proxy_fields(verdict);
-    if let Some(p) = &proxy {
-        log::info!("updater: downloading via proxy {p}");
-    }
-    update.proxy = proxy;
-    update.no_proxy = no_proxy;
-
-    // No progress callbacks: the UI shows a single "downloading" state, and on
-    // Windows this hands off to the installer and exits rather than returning.
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[cfg(test)]
-mod updater_tests {
-    use super::*;
-    use widget_netproxy::ProxyTarget;
-
-    fn plugins_from(json: &str) -> std::collections::HashMap<String, serde_json::Value> {
-        serde_json::from_str(json).expect("test fixture is valid JSON")
-    }
-
-    // [PX-09] The endpoint we ask the proxy about is the one the plugin will
-    // actually fetch: read from the REAL tauri.conf.json, not a fixture, so a
-    // renamed key or a restructured config fails here instead of silently
-    // resolving the proxy for nothing.
-    #[test]
-    fn px09_endpoint_comes_from_the_shipped_config() {
-        let conf: serde_json::Value =
-            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
-        let plugins = conf
-            .get("plugins")
-            .and_then(|p| p.as_object())
-            .expect("plugins section")
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        let url = updater_endpoint(&plugins).expect("an updater endpoint to resolve a proxy for");
-        assert!(
-            matches!(url.scheme(), "http" | "https"),
-            "endpoint must be an http(s) URL for [PX-05] to reach the OS: {url}"
-        );
-        assert!(url.host_str().is_some(), "endpoint must have a host: {url}");
-    }
-
-    // [PX-05] A config we cannot read an endpoint from is DIRECT, not a panic
-    // and not a failed update check.
-    #[test]
-    fn px09_unreadable_config_yields_no_endpoint() {
-        for json in [
-            r#"{}"#,                                        // no updater plugin
-            r#"{"updater":{}}"#,                            // no endpoints key
-            r#"{"updater":{"endpoints":[]}}"#,              // empty list
-            r#"{"updater":{"endpoints":[42]}}"#,            // not a string
-            r#"{"updater":{"endpoints":["not a url"]}}"#,   // not parseable
-            r#"{"updater":{"endpoints":"https://a.example"}}"#, // not a list
-        ] {
-            assert!(
-                updater_endpoint(&plugins_from(json)).is_none(),
-                "expected no endpoint from {json}"
-            );
-        }
-    }
-
-    // [PX-09] DIRECT must switch reqwest's own proxy sniffing OFF rather than
-    // leave it unset - unset is a second resolver, free to disagree with the
-    // Windows configuration that [PX-01] makes the only source of truth.
-    #[test]
-    fn px09_direct_verdict_disables_reqwests_own_proxy() {
-        let (proxy, no_proxy) = updater_proxy_fields(ProxyTarget::Direct);
-        assert!(proxy.is_none());
-        assert!(no_proxy, "DIRECT must set no_proxy, not merely omit a proxy");
-    }
-
-    // [PX-09] A resolved proxy is carried through verbatim, with sniffing left
-    // on its default so the explicit choice is the only one in play.
-    #[test]
-    fn px09_resolved_proxy_is_carried_verbatim() {
-        let p = url::Url::parse("http://proxy.corp.example:8080").expect("parse");
-        let (proxy, no_proxy) = updater_proxy_fields(ProxyTarget::Proxy(p.clone()));
-        assert_eq!(proxy, Some(p));
-        assert!(!no_proxy);
-    }
-}
-
 /// Shared client for `http_get`, honoring the Windows proxy (netproxy SPEC
 /// [PX-01]).
 ///
@@ -8946,8 +8726,6 @@ pub fn run() {
         .plugin(log_builder.build())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Stamp the running version into the one shared User-Agent
             // (netproxy [PX-10]) before anything can issue a request: no window
@@ -9260,8 +9038,6 @@ pub fn run() {
             analytics::analytics_session_end,
             analytics::analytics_mark_sent,
             analytics::diag_analytics_test,
-            updater_check,
-            updater_install,
             tray::tray_env,
             tray::tray_sync,
             tray::tray_flyout_hide,
@@ -14268,7 +14044,6 @@ mod tests {
             "rustls::common_state",
             "reqwest::connect",
             "ureq::pool",
-            "tauri_plugin_updater::updater",
             "tao::platform_impl::platform::event_loop::runner",
             "tauri::manager",
             "wmi::connection",

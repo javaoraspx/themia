@@ -105,27 +105,6 @@ if (import.meta.env.DEV && params.has('pickeronly')) {
   import('./components/AddWidgetPage.tsx').then(({ default: AddWidgetPage }) => {
     render(() => <div style="flex:1;min-width:0;display:flex"><AddWidgetPage onPick={() => {}} onBack={() => {}} /></div>, appEl);
   });
-} else if (import.meta.env.DEV && params.has('updatebadge')) {
-  // DEV-ONLY browser harness: the bottom-right corner badges ([S-35]) over a
-  // stand-in wallpaper, so the glass pill and its stacking with the game-mode
-  // badge can be eyeballed without a Tauri session. Stripped from prod builds.
-  const appEl = document.getElementById('app')!;
-  appEl.style.cssText = 'position:fixed;inset:0;background:linear-gradient(135deg,#2b4162,#12100e);';
-  import('./App.css');
-  Promise.all([
-    import('./components/UpdateBadge.tsx'),
-    import('./i18n.ts'),
-    import('lucide-solid'),
-  ]).then(([{ default: UpdateBadge }, { tm }, { Pause }]) => {
-    render(() => (
-      <div class="corner-badges">
-        <UpdateBadge version={params.get('updatebadge') || '1.13.0'} onOpen={() => {}} />
-        {params.has('stale') && (
-          <div class="game-mode-badge"><Pause size={12} strokeWidth={1.5} /><span>{tm('app.stalePill')()}</span></div>
-        )}
-      </div>
-    ), appEl);
-  });
 } else if (import.meta.env.DEV && params.has('consentcard')) {
   // DEV-ONLY browser harness: the first-run analytics consent card ([S-27])
   // over a stand-in wallpaper, so its copy and buttons can be eyeballed

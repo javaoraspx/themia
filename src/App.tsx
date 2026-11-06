@@ -26,7 +26,7 @@ import { invoke } from './ipc.ts';
 
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
-import { Settings, X, Plus, Monitor, Copy, Download, GripVertical, Pause, Layers, Grid3x3 } from 'lucide-solid';
+import { Settings, X, Plus, Monitor, Copy, GripVertical, Pause, Layers, Grid3x3 } from 'lucide-solid';
 import { regenerateDevViewsOnBoot } from './dev/labView.ts';
 import { initLicense } from './license.ts';
 import { initNativeDragListener } from './nativeDragDrop.ts';
@@ -40,9 +40,6 @@ import { useInteractive } from './input/interactivityStore.ts';
 import { editMode, setEditMode } from './editMode.ts';
 import { anyPinned } from './pinLayer.ts';
 import { installOverlayBridge } from './overlayBridge.ts';
-import { checkForUpdate, installUpdate, type UpdateInfo } from './updater.ts';
-import { shouldShowUpdateBadge, getDismissedVersion } from './updateBadge.ts';
-import UpdateBadge from './components/UpdateBadge.tsx';
 import AnalyticsConsent from './components/AnalyticsConsent.tsx';
 import { attach as attachLogger, logger, setLogForwarding } from './debugLog.ts';
 import { initGameMode, gameModeSuspended } from './gameMode.ts';
@@ -145,22 +142,6 @@ export default function App() {
   onCleanup(() => offUnlock?.());
   // [S-27] True only in the window that claimed the first-run consent prompt.
   const [consentPrompt, setConsentPrompt] = createSignal(false);
-  const [updateAvail, setUpdateAvail] = createSignal<UpdateInfo | null>(null);
-  const [updateStatus, setUpdateStatus] = createSignal<'idle' | 'downloading' | 'done' | 'error'>('idle');
-  const [, setUpdateChecked] = createSignal(false);
-  // [S-35] A check that happened in the CONFIG window (its mount check, or the
-  // manual "Check for updates" button) also lights the desktop badge here;
-  // otherwise the desktop would keep claiming nothing is available until the
-  // next app start.
-  const offUpdateFound = onTransient('update-available', (m) => setUpdateAvail({ version: m.version }));
-  onCleanup(offUpdateFound);
-  // [S-35] Dismissal is per-VERSION and shared across windows, so dismissing the
-  // badge on one monitor drops it on all of them, and the next release brings it
-  // back on its own.
-  // Hidden in edit mode: the edit bar already carries a full Update button, and
-  // two offers of the same update in one corner-to-center glance is noise.
-  const updateBadgeVisible = createMemo(() =>
-    !editMode() && shouldShowUpdateBadge(updateAvail()?.version, getDismissedVersion()));
 
   const [barDragging, setBarDragging] = createSignal(false);
   const [barSnapTarget, setBarSnapTarget] = createSignal<ViewBarPosition | null>(null);
@@ -266,10 +247,6 @@ export default function App() {
   installOverlayBridge({
     extraDeps: () => {
       void editMode();
-      // [S-35] The update badge joins the rect set while shown; track it so the
-      // pass-through mask covers it (and re-opens when it's dismissed),
-      // otherwise SetWindowRgn clips it away and it can't be clicked.
-      void updateBadgeVisible();
       void placing();
     },
   });
@@ -401,11 +378,6 @@ export default function App() {
     window.addEventListener('themia:display-changed', onDisplayChanged);
     onCleanup(() => window.removeEventListener('themia:display-changed', onDisplayChanged));
     initLicense();
-    if (localStorage.getItem('themia-auto-check-updates') !== 'false') {
-      checkForUpdate().then(update => { if (update) setUpdateAvail(update); setUpdateChecked(true); }).catch(() => { setUpdateChecked(true); });
-    } else {
-      setUpdateChecked(true);
-    }
   });
 
   function handlePlace(x: number, y: number) {
@@ -778,15 +750,6 @@ export default function App() {
           <AnalyticsConsent onAnswered={() => setConsentPrompt(false)} />
         </Show>
 
-        {/* [S-35] A newer release was found: a quiet pill that opens Settings →
-            Updates. Dismissing it silences THIS version only. */}
-        <Show when={updateBadgeVisible()}>
-          <UpdateBadge
-            version={updateAvail()!.version}
-            onOpen={() => openConfigWindow({ kind: 'app', page: 'updates' })}
-          />
-        </Show>
-
         {/* Shown while widgets are suspended (fullscreen / game / presentation). */}
         <Show when={gameModeSuspended()}>
           <div class="game-mode-badge" title={tm('app.stalePillTitle')()} data-themia-interactive="true">
@@ -818,25 +781,6 @@ export default function App() {
             />
           </div>
           <button class="design-btn" onClick={() => openConfigWindow({ kind: 'app', page: 'general' })}><Settings size={13} strokeWidth={1.5} /> {tm('app.pillSettings')()}</button>
-          <Show when={updateAvail()}>
-            <button
-              class="design-btn update-btn"
-              disabled={updateStatus() !== 'idle'}
-              onClick={async () => {
-                setUpdateStatus('downloading');
-                try {
-                  await installUpdate();
-                  setUpdateStatus('done');
-                } catch { setUpdateStatus('error'); }
-              }}
-            >
-              <Download size={13} strokeWidth={1.5} />
-              {updateStatus() === 'idle' ? t('app.updateVersion', { version: updateAvail()!.version })
-                : updateStatus() === 'downloading' ? t('app.downloading')
-                : updateStatus() === 'done' ? t('app.restartToFinish')
-                : t('app.updateFailed')}
-            </button>
-          </Show>
           <div class="divider" />
           <button class="design-btn primary" onClick={() => setEditMode(false)}>
             <X size={13} strokeWidth={1.5} /> {tm('app.leaveEditMode')()}

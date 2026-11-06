@@ -441,28 +441,6 @@ Mirror these `[S-NN]` tags in test names (e.g. `S-07_migrates_cell_layout`).
   the right-click context menu, work across the whole screen. Zero-area
   (degenerate) rects count as empty. (Regression: themia-releases#34.)
 
-## Update badge
-
-- **[S-35]** When an update check finds a newer release, every widget window
-  shows a quiet **bottom-right pill** (`.update-badge`, stacked in
-  `.corner-badges` above the game-mode badge) carrying an arrow icon and the
-  offered version. It is `[data-themia-interactive]`, so it joins the
-  pass-through mask ([S-17]) and stays clickable while the rest of the desktop
-  does not; the mask re-pushes when it appears or is dismissed.
-  - **Sources:** the window's own mount check, AND an `update-available`
-    transient posted by the config window — its mount check and the manual
-    "Check for updates" button both flow through one `adoptUpdate` entry point,
-    so a check made in Settings lights the desktop badge immediately instead of
-    at the next app start.
-  - **Click** opens Settings → Updates (never installs directly: install +
-    restart stays an explicit choice on that page).
-  - **Dismissal is per-version.** The X writes the offered version to
-    `themia-update-dismissed` via `writeShared`, so every monitor's badge drops
-    in one gesture; the next release offers a different version string and the
-    badge returns on its own. Matching is exact-string, not semver.
-  - **Hidden in edit mode**, where the edit bar already carries a full Update
-    button — one offer per glance.
-
 ## Widget stacking (containment)
 
 - **[S-19]** A widget may carry `parentId: string` naming a **container** widget
@@ -709,8 +687,8 @@ Mirror these `[S-NN]` tags in test names (e.g. `S-07_migrates_cell_layout`).
     and rebuilds a renderer.
   - The pin window mounts `PinLayer.tsx`, not `App.tsx`, chosen by the window
     LABEL so the two can never disagree. It has no view bar, no edit chrome, no
-    startup animation and none of App's one-shot per-monitor work (update
-    check, tray sync, analytics, license), which would otherwise run twice per
+    startup animation and none of App's one-shot per-monitor work (tray sync,
+    analytics, license), which would otherwise run twice per
     monitor. What both windows genuinely share — the hit-mask push and the
     Rust bridges — is `overlayBridge.ts`, imported by both.
   - It is suppressed by the same gates as the base overlay: monitor disabled,

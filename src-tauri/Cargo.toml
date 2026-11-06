@@ -40,7 +40,6 @@ widget-license = { path = "../widgets/license" }
 widget-gallery = { path = "../widgets/others/gallery" }
 widget-notes = { path = "../widgets/others/notes" }
 
-tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-log = "2"
 log = "0.4"

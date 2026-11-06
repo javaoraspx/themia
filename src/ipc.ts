@@ -945,11 +945,6 @@ export interface Commands {
   license_status: { args: void; result: LicenseStatus };
   license_get_key: { args: void; result: string | null };
   newsletter_subscribe: { args: { email: string }; result: void };
-  // ── Updater ──
-  // Owned by the app rather than tauri-plugin-updater's own IPC commands, so
-  // the check and the download traverse the Windows proxy (netproxy [PX-09]).
-  updater_check: { args: void; result: { version: string } | null };
-  updater_install: { args: void; result: void };
   // ── Autostart ──
   autostart_is_enabled: { args: void; result: boolean };
   /** [AS-06] Resolves if autostart is configurable; rejects with an `AutostartError`. */
@@ -1049,7 +1044,6 @@ export const TYPED_COMMANDS = [
   'notes_list', 'notes_read', 'notes_write', 'notes_create', 'notes_rename', 'notes_delete',
   'license_activate', 'license_validate', 'license_deactivate', 'license_status',
   'license_get_key', 'newsletter_subscribe',
-  'updater_check', 'updater_install',
   'autostart_is_enabled', 'autostart_can_configure', 'autostart_enable', 'autostart_disable',
   'analytics_consent', 'analytics_set_consent', 'analytics_claim_consent_prompt',
   'analytics_plan', 'analytics_track',

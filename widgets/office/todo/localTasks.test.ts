@@ -218,4 +218,16 @@ describe('visibleLocalTasks [S-46]', () => {
   it('shows every task when showCompleted is true', () => {
     expect(visibleLocalTasks(base, true)).toEqual(base);
   });
+
+  // [S-65] A row that has just been ticked is still on screen for its beat,
+  // even though completed rows are hidden — otherwise the tick would be
+  // invisible and the row would look like it vanished under the cursor.
+  it('keeps a task named in `keep` while it is settling', () => {
+    expect(visibleLocalTasks(base, false, new Set(['b'])).map(t => t.id)).toEqual(['a', 'b', 'c']);
+    expect(visibleLocalTasks(base, false, new Map([['b', 1]])).map(t => t.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('drops a settling task again as soon as it is not kept', () => {
+    expect(visibleLocalTasks(base, false, new Set()).map(t => t.id)).toEqual(['a', 'c']);
+  });
 });

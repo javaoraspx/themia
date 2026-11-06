@@ -80,7 +80,17 @@ export function removeLocalTask(tasks: LocalTask[], id: string): LocalTask[] {
 }
 
 /** The subset to render: completed tasks are hidden unless `showCompleted`.
- *  Order is preserved. */
-export function visibleLocalTasks(tasks: LocalTask[], showCompleted: boolean): LocalTask[] {
-  return showCompleted ? tasks : tasks.filter(t => !t.done);
+ *  Order is preserved.
+ *
+ *  `keep` names tasks that must stay on screen even though they are completed —
+ *  a row that is still settling after a tick is drawn while it fades out
+ *  ([S-65]), and dropping it the instant it is ticked is exactly the "it
+ *  vanished under the cursor" the settle exists to fix. */
+export function visibleLocalTasks(
+  tasks: LocalTask[],
+  showCompleted: boolean,
+  keep?: { has(id: string): boolean },
+): LocalTask[] {
+  if (showCompleted) return tasks;
+  return tasks.filter(t => !t.done || (keep?.has(t.id) ?? false));
 }

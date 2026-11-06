@@ -108,11 +108,6 @@ export type TransientMsg =
   // the note whose BODY changed, so a widget showing a different note can skip
   // the re-read; it is absent for list-shape changes.
   | { type: 'notes-changed'; id?: string }
-  // An update check found a newer release ([S-35]). The config window checks on
-  // mount and on the manual "Check for updates" button; the widget windows have
-  // no way to learn about that result otherwise, so they'd keep showing no
-  // badge until the next app start.
-  | { type: 'update-available'; version: string }
   // Settings preview button: replay an intro (incl. the hyperspace overlay,
   // [S-16]) in every widget window. `mode` selects which section's style +
   // duration to play ([S-24]/[S-16]); absent = 'startup' (back-compat).

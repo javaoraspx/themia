@@ -86,6 +86,24 @@
   padding: 6px 14px;
 }
 
+/* [S-65] The beat after a tick: the row is frozen at its slot for a moment, so
+   the tick is seen where the click was instead of the row moving out from under
+   it. The tint marks the row being acted on (it is invisible under the cursor,
+   which already carries `:hover`, and it is what a keyboard toggle gets). */
+.todo-item.settling {
+  background: var(--overlay-subtle);
+  border-radius: 4px;
+}
+
+/* [S-65] A row that cannot stay — completed while completed tasks are hidden —
+   fades before the list closes up behind it. Opacity only: the row keeps its
+   height until it is dropped, so the rows below are not shoved up twice. */
+.todo-item.leaving {
+  opacity: 0;
+  transition: opacity var(--todo-settle-fade, 150ms) ease-out;
+  pointer-events: none;
+}
+
 /* ── Checkbox ───────────────────────────────────────────────────────── */
 
 /* [S-31] A real button: it is the one hit target that completes a task, so it

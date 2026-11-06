@@ -115,3 +115,30 @@ export function sinkCompleted<T extends { status: string }>(rows: T[]): T[] {
   if (firstDone === active.length) return rows;
   return [...active, ...done];
 }
+
+/**
+ * Draw the rows named in `slots` at the index they were frozen at ([S-65]),
+ * leaving every other row where the arrangement put it.
+ *
+ * This is the whole trick behind the tick's beat: ticking a box changes the
+ * arrangement ([S-64]) in the same frame as the tick itself, so the row leaves
+ * before the eye finds it. Freezing its slot holds it still for the beat, then
+ * releasing the freeze lets it go — and because this is a rendering step, no
+ * state, no config and no backend call is involved either way.
+ *
+ * Frozen slots are inserted in ascending order so one insertion cannot shift
+ * where the next one belongs, and a slot past the end parks the row at the end
+ * rather than vanishing. Ids that are no longer in `rows` are ignored.
+ */
+export function freezeAt<T extends { id: string }>(rows: T[], slots: ReadonlyMap<string, number>): T[] {
+  if (!slots.size) return rows;
+  const frozen = rows.filter(r => slots.has(r.id));
+  if (!frozen.length) return rows;
+  const out = rows.filter(r => !slots.has(r.id));
+  frozen.sort((a, b) => slots.get(a.id)! - slots.get(b.id)!);
+  for (const row of frozen) {
+    const at = Math.min(Math.max(slots.get(row.id)!, 0), out.length);
+    out.splice(at, 0, row);
+  }
+  return out;
+}

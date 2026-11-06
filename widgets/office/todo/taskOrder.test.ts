@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder, sinkCompleted } from './taskOrder.ts';
+import { parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder, sinkCompleted, freezeAt } from './taskOrder.ts';
 
 const row = (id: string) => ({ id });
 const task = (id: string, status = 'notStarted') => ({ id, status });
@@ -130,5 +130,54 @@ describe('sinkCompleted [S-64]', () => {
     const after = [task('a'), task('b', 'completed'), task('c')];
     expect(before.map(r => r.id)).toEqual(['a', 'b', 'c']);
     expect(sinkCompleted(after).map(r => r.id)).toEqual(['a', 'c', 'b']);
+  });
+});
+
+describe('freezeAt [S-65]', () => {
+  it('leaves the arrangement alone when nothing is frozen', () => {
+    const rows = [task('a'), task('b')];
+    expect(freezeAt(rows, new Map())).toBe(rows);
+  });
+
+  it('holds a just-completed row at the slot it was ticked in', () => {
+    // Ticked 'b' in the middle: the sunk arrangement wants it last, the freeze
+    // keeps it where the click was until its beat is over.
+    const sunk = [task('a'), task('c'), task('b', 'completed')];
+    expect(freezeAt(sunk, new Map([['b', 1]])).map(r => r.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('holds an un-ticked row where it was last seen, at the bottom', () => {
+    // 'b' was the last row and has just been un-ticked; the re-derived list
+    // would put it back in the middle, the freeze keeps it at the bottom.
+    const arranged = [task('a'), task('b'), task('c')];
+    expect(freezeAt(arranged, new Map([['b', 2]])).map(r => r.id)).toEqual(['a', 'c', 'b']);
+  });
+
+  it('parks a slot past the end at the end rather than dropping the row', () => {
+    const rows = [task('a')];
+    expect(freezeAt(rows, new Map([['a', 7]])).map(r => r.id)).toEqual(['a']);
+    expect(freezeAt(rows, new Map([['a', -3]])).map(r => r.id)).toEqual(['a']);
+  });
+
+  it('ignores a frozen id that is no longer in the list', () => {
+    const rows = [task('a'), task('b')];
+    expect(freezeAt(rows, new Map([['gone', 0]])).map(r => r.id)).toEqual(['a', 'b']);
+  });
+
+  it('inserts several frozen rows in slot order', () => {
+    const rows = [task('a'), task('d'), task('b'), task('c')];
+    // Two rows were ticked in the same beat: each returns to the slot it was
+    // frozen at, so their order follows those slots, not the array.
+    expect(freezeAt(rows, new Map([['b', 1], ['d', 2]])).map(r => r.id)).toEqual(['a', 'b', 'd', 'c']);
+  });
+
+  it('is what makes a tick read as a tick: hold, then sink on release', () => {
+    const rows = [task('a'), task('b'), task('c')];
+    const ticked = [task('a'), task('b', 'completed'), task('c')];
+    const frozen = freezeAt(sinkCompleted(ticked), new Map([['b', 1]]));
+    const released = freezeAt(sinkCompleted(ticked), new Map());
+    expect(frozen.map(r => r.id)).toEqual(['a', 'b', 'c']);
+    expect(released.map(r => r.id)).toEqual(['a', 'c', 'b']);
+    expect(rows.map(r => r.id)).toEqual(['a', 'b', 'c']);
   });
 });

@@ -1,6 +1,5 @@
 import { createSignal, createMemo, createEffect, onMount, onCleanup, Show, Switch, Match, Suspense } from 'solid-js';
 import { TriangleAlert } from 'lucide-solid';
-import { checkForUpdate, type UpdateInfo } from './updater.ts';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from './ipc.ts';
@@ -80,27 +79,13 @@ export default function ConfigWindow() {
 
   // App-settings page state (was previously owned by ConfigWindow's SettingsPage).
   const [autostart, setAutostart] = createSignal(false);
-  const [autoCheckUpdates, setAutoCheckUpdates] = createSignal(localStorage.getItem('themia-auto-check-updates') !== 'false');
   // User-facing "share anonymous usage data", the inverse of the backend
   // opt-out flag. Seeded from disk at mount (default on / opt-out false).
   // Off until the backend says consent was granted: `unset` shares nothing,
   // so it must not render as an enabled toggle ([S-03]).
   const [analyticsEnabled, setAnalyticsEnabled] = createSignal(false);
   const [appVersion, setAppVersion] = createSignal('');
-  const [updateAvail, setUpdateAvail] = createSignal<UpdateInfo | null>(null);
-  const [updateStatus, setUpdateStatus] = createSignal<'idle' | 'downloading' | 'done' | 'error'>('idle');
   const winLabel = getCurrentWindow().label;
-
-  /**
-   * [S-35] Adopt a check result AND tell the widget windows, so the desktop
-   * badge lights up from a check made here — whether the mount check found it
-   * or the user pressed "Check for updates". The single entry point every
-   * update-check result flows through; Settings gets this as `setUpdateAvail`.
-   */
-  function adoptUpdate(u: UpdateInfo | null) {
-    setUpdateAvail(u);
-    if (u) postTransient({ type: 'update-available', version: u.version });
-  }
 
   // Bump _refresh in a widget's config so its (separate) widget window re-fetches.
   function bumpWidgetRefresh(widgetId: string) {
@@ -255,9 +240,6 @@ export default function ConfigWindow() {
       .catch(e => logger.warn('config', `autostart_is_enabled failed, toggle may not reflect reality: ${e}`));
     invoke('analytics_consent').then(c => setAnalyticsEnabled(c === 'granted')).catch(() => {});
     getVersion().then(v => setAppVersion(v)).catch(() => {});
-    if (autoCheckUpdates()) {
-      checkForUpdate().then(u => { if (u) adoptUpdate(u); }).catch(() => {});
-    }
 
     navigate(initialTarget);
 
@@ -481,16 +463,10 @@ export default function ConfigWindow() {
                 setGlobalDesign(key as keyof GlobalDesign, value as GlobalDesign[keyof GlobalDesign])}
               autostart={autostart}
               setAutostart={setAutostart}
-              autoCheckUpdates={autoCheckUpdates}
-              setAutoCheckUpdates={setAutoCheckUpdates}
               analyticsEnabled={analyticsEnabled}
               setAnalyticsEnabled={setAnalyticsEnabled}
               winLabel={winLabel}
               appVersion={appVersion}
-              updateAvail={updateAvail}
-              setUpdateAvail={adoptUpdate}
-              updateStatus={updateStatus}
-              setUpdateStatus={setUpdateStatus}
             />
           </Match>
 
