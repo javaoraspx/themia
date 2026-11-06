@@ -3,7 +3,7 @@ import { createPolling } from '../../../src/createPolling';
 import { Show, For } from 'solid-js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke, isDemo } from '../../../src/demo/invoke.ts';
-import { CheckSquare, Square, RefreshCw, Circle, CheckCircle2, Plus, Trash2, Pencil } from 'lucide-solid';
+import { CheckSquare, Square, RefreshCw, Circle, CheckCircle2, Plus, Trash2, Pencil, ChevronDown } from 'lucide-solid';
 import { showCtxMenu } from '../../../src/ctxMenuStore.ts';
 import { registerWidgetKeyboard, type WidgetKeyEvent } from '../../../src/input/widgetKeyboard.ts';
 import { onAppBlur } from '../../../src/input/appBlur.ts';
@@ -55,6 +55,10 @@ export interface TodoProps {
    *  validated via `parseTaskOrder`. Local mode has no use for it: there the
    *  stored `localTasks` array IS the order. */
   taskOrder?: unknown;
+  /** [S-68] Whether the finished group is folded away behind its header.
+   *  Untrusted config value — only a literal `true` means collapsed, so
+   *  anything else (absent, corrupt) leaves the group open. */
+  completedCollapsed?: unknown;
   /** Stable per-instance id, injected by WidgetGrid/WidgetWindow. The write key
    *  for local tasks, so each placed widget owns an independent list. [S-41] */
   _widgetId?: string;
@@ -153,6 +157,8 @@ export default function Todo(props: TodoProps) {
 
   const viewMode = () => props.viewMode ?? 'list';
   const showCompleted = () => props.showCompleted ?? false;
+  // [S-68] Untrusted config: only a literal `true` folds the group.
+  const collapsed = () => props.completedCollapsed === true;
   const titleLines = () => clampTitleLines(props.titleLines);
   const refreshInterval = () => (props.refreshInterval ?? 60) * 1000;
 
@@ -207,19 +213,30 @@ export default function Todo(props: TodoProps) {
   // what keeps a completed-but-fading row on screen while `showCompleted` is off
   // ([S-46]).
   const taskOrder = createMemo(() => parseTaskOrder(props.taskOrder));
-  const displayTasks = createMemo<TodoTask[]>(() => {
+  // [S-68] The whole arrangement, collapsed group included. Split out from
+  // `displayTasks` because the collapsed header still has to say how many tasks
+  // it is hiding — a count read off the *displayed* rows would be 0 and the
+  // header would disappear, leaving no way back.
+  const arrangedTasks = createMemo<TodoTask[]>(() => {
     const held = heldSlots();
     const arranged = isLocal()
       ? visibleLocalTasks(localList(), showCompleted(), held).map(localToDisplay)
       : applyTaskOrder(isToday() ? todayTasks(tasks()) : tasks(), taskOrder());
     return freezeAt(sinkCompleted(arranged), held);
   });
+  const displayTasks = createMemo<TodoTask[]>(() => {
+    if (!collapsed()) return arrangedTasks();
+    const held = heldSlots();
+    // A row in its beat is drawn where it was ticked ([S-65]) — it has not
+    // reached the group yet, so collapsing must not swallow it mid-glide.
+    return arrangedTasks().filter(r => rowBand(r, held) !== 'done');
+  });
 
   // [S-66] How many tasks the finished group below the add row holds. A row that
   // is still frozen [S-65] is not in it yet — it is on its way, drawn among the
   // active tasks — so the divider appears exactly when the row lands, instead of
   // flashing in for the length of the beat.
-  const completedCount = createMemo(() => countSettledCompleted(displayTasks(), heldSlots()));
+  const completedCount = createMemo(() => countSettledCompleted(arrangedTasks(), heldSlots()));
 
   // Which render block to show. A local widget with a list is always "loaded"
   // (an empty list still shows the add-task row); one whose list is gone or
@@ -238,6 +255,18 @@ export default function Todo(props: TodoProps) {
     if (!id) return;
     const current = layoutStore.layout.widgets.find(w => w.id === id)?.config ?? {};
     layoutStore.updateWidgetConfig(id, { ...current, ...patch });
+  }
+
+  /** [S-68] Fold / unfold the finished group. Config, not local state: the grid
+   *  tile, a pop-out and the config window are three views of one widget.
+   *
+   *  The rows leave (or return) in one go, so the fold gets the same FLIP the
+   *  tick does ([S-65]): measure, flip the state, glide. It runs through the
+   *  same `glide`, which is what keeps a fold from fighting a drag. */
+  function toggleCollapsed(): void {
+    const before = prefersReducedMotion() ? null : measureRows();
+    writeConfig({ completedCollapsed: !collapsed() });
+    if (before) requestAnimationFrame(() => glide(before));
   }
 
   /** The single write path for every local task mutation: it lands in the
@@ -370,7 +399,10 @@ export default function Todo(props: TodoProps) {
     const band = rowBand(task, heldSlots());
     const inBand = rows().filter(r => rowBand(r, heldSlots()) === band);
     holdRow(task.id, band, Math.max(0, inBand.findIndex(r => r.id === task.id)));
-    const leaving = completing && !showCompleted();
+    // [S-68] The finished group is off screen both when completed tasks are
+    // hidden and when it is folded away, so the row has to fade out either way
+    // instead of being dropped the instant its beat ends.
+    const leaving = completing && (!showCompleted() || collapsed());
 
     if (isLocal()) {
       writeLocal(toggleLocalTask(localList(), task.id));
@@ -395,7 +427,9 @@ export default function Todo(props: TodoProps) {
       // disappearing out from under the cursor.
       settle(task.id, {
         leaving,
-        drop: leaving ? () => setTasks(prev => prev.filter(t => t.id !== task.id)) : undefined,
+        // Only a list that never carried completed tasks has to forget the row.
+        // A folded group still holds it — it is merely not drawn ([S-68]).
+        drop: leaving && !showCompleted() ? () => setTasks(prev => prev.filter(t => t.id !== task.id)) : undefined,
       });
     } catch {
       // Revert, and let go of the row at once: an animation for a write that
@@ -469,7 +503,10 @@ export default function Todo(props: TodoProps) {
       writeLocal(reorderLocalTasks(localList(), nextIds));
       return;
     }
-    writeConfig({ taskOrder: nextIds });
+    // [S-68] Ids the folded group is hiding are not in the drag's own list; keep
+    // them after the ones that are, instead of forgetting they were ever there.
+    const hidden = taskOrder().filter(id => !nextIds.includes(id));
+    writeConfig({ taskOrder: [...nextIds, ...hidden] });
   }
 
   async function runDragPoll(gen: number): Promise<void> {
@@ -867,7 +904,9 @@ export default function Todo(props: TodoProps) {
   /** Persist the order currently on screen ([S-54]). Rebuilt from the rendered
    *  rows, so ids of deleted tasks prune themselves instead of accumulating. */
   function pinOrder(): void {
-    writeConfig({ taskOrder: displayTasks().map(tk => tk.id) });
+    // [S-68] The FULL arrangement, not the displayed rows: a folded group is not
+    // on screen, and writing the visible ids alone would drop its slot.
+    writeConfig({ taskOrder: arrangedTasks().map(tk => tk.id) });
   }
 
   function handleAddKeyDown(e: KeyboardEvent) {
@@ -1135,13 +1174,24 @@ export default function Todo(props: TodoProps) {
             </div>
           </Show>
 
-          {/* [S-66] The finished group starts here. */}
+          {/* [S-66] The finished group starts here. [S-68] The band is the
+              fold control: one target for "show me what I have finished", with
+              the count on it, so a long archive costs one row instead of all of
+              them. */}
           <Show when={completedCount() > 0}>
-            <div class="todo-divider" ref={bindDivider}>
+            <button
+              type="button"
+              class="todo-divider"
+              classList={{ collapsed: collapsed() }}
+              ref={bindDivider}
+              aria-expanded={!collapsed()}
+              onClick={toggleCollapsed}
+            >
+              <ChevronDown size={11} strokeWidth={2.5} class="todo-divider-chevron" />
               <span class="todo-divider-label">
                 {t('todo.completedGroup', { count: completedCount() })}
               </span>
-            </div>
+            </button>
           </Show>
         </div>
         <Show when={canScrollDown()}>

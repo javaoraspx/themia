@@ -81,6 +81,32 @@ describe('todo widget mounts [S-65] [S-66]', () => {
     dispose();
   });
 
+  // [S-68] Folding hides the rows but keeps the band — the band IS the control
+  // that brings them back, so it must survive with its count intact.
+  it('folds the finished rows away and leaves the band, with its count', () => {
+    seedLocalList('list-fold', 'Fold', [
+      { id: 'a', title: 'Still to do', done: false },
+      { id: 'b', title: 'Already done', done: true },
+    ]);
+
+    const { host, dispose } = mount({
+      storageMode: 'local',
+      localListId: 'list-fold',
+      showCompleted: true,
+      completedCollapsed: true,
+      _widgetId: 'widget-fold',
+    });
+
+    expect(Array.from(host.querySelectorAll('.todo-title'), el => el.textContent)).toEqual(['Still to do']);
+    const divider = host.querySelector('.todo-divider');
+    expect(divider, 'the fold control must stay').not.toBeNull();
+    expect(divider!.textContent).toContain('1');
+    expect(divider!.getAttribute('aria-expanded')).toBe('false');
+    expect(divider!.classList.contains('collapsed')).toBe(true);
+
+    dispose();
+  });
+
   it('leaves the divider out when nothing is finished', () => {
     seedLocalList('list-plain', 'Plain', [{ id: 'a', title: 'Only one', done: false }]);
 

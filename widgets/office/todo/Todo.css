@@ -125,13 +125,33 @@
   order: 2;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  width: 100%;
   padding: 4px 14px 2px;
+  /* [S-68] It is the fold control, so it is a real <button> — which means
+     shedding the button chrome. It has to keep reading as a divider first and
+     as a control second: no fill, no border, the same hairline type as before,
+     and only the label brightening on hover. */
+  border: none;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
   font-size: calc(10px * var(--font-scale, 1));
   color: var(--subtle-foreground);
   font-variant-numeric: tabular-nums;
   user-select: none;
+  transition: color 0.12s;
 }
+.todo-divider:hover { color: var(--foreground); }
+.todo-divider:focus-visible {
+  outline: 1.5px solid var(--primary);
+  outline-offset: -1.5px;
+  border-radius: 4px;
+}
+/* Points down while the group is open, right while it is folded. */
+.todo-divider-chevron { flex-shrink: 0; transition: transform 0.15s ease; }
+.todo-divider.collapsed .todo-divider-chevron { transform: rotate(-90deg); }
 .todo-divider::before,
 .todo-divider::after {
   content: '';
@@ -374,4 +394,5 @@
    fading. (The settle [S-65] is skipped in script, not here.) */
 @media (prefers-reduced-motion: reduce) {
   .todo-divider { animation: none; }
+  .todo-divider-chevron { transition: none; }
 }

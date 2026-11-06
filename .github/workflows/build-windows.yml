@@ -5,14 +5,34 @@ name: Build Windows installer
 # a build — it is deliberately not wired to `push`, so a session of small
 # commits never burns runner time.
 #
-# The generated installer is UNSIGNED (see .github/scripts/prepare-ci-config.mjs
-# for what is stripped and why), so SmartScreen will warn on first launch:
+# Every successful run publishes a GitHub RELEASE (that is the page with the
+# download button), not just a run artifact. Two things follow from that:
+#   - The version is derived from the newest release tag and bumped, so each
+#     build is its own version (0.15.2, 0.15.3, …) without ever editing
+#     tauri.conf.json in the repository — the tags are the counter.
+#   - The tag also gives the build a name the app's own "version" line can show,
+#     and it is what a future updater would have to point at.
+#
+# The installer is UNSIGNED (see .github/scripts/prepare-ci-config.mjs for what
+# is stripped and why), so SmartScreen warns on first launch:
 # "More info" → "Run anyway".
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. 0.16.0). Leave empty to bump the newest release by one patch.'
+        required: false
+        default: ''
 
 permissions:
-  contents: read
+  # Creating the release and its tag.
+  contents: write
+
+# One release at a time: two runs racing would compute the same next version and
+# the second `gh release create` would fail on the tag that already exists.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -68,8 +88,46 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      - name: Strip code signing + updater signing (runner copy only)
-        run: node .github/scripts/prepare-ci-config.mjs
+      # Version + the unsigned-bundle patch, both written into the runner's
+      # throwaway checkout. `inputs.version` wins when the person dispatching
+      # asked for a specific one; otherwise the newest release tag is bumped by
+      # one patch, and a repository that has never released keeps the version it
+      # already declares.
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          v=""
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            v="${INPUT_VERSION#v}"
+          else
+            # The newest release is the counter; a repository that has never
+            # released starts from the version it declares. Either way the build
+            # gets its OWN patch number, so a rebuild is never mistaken for the
+            # build that came before it.
+            base="$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')"
+            base="${base#v}"
+            if [ -z "$base" ]; then
+              base="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)"
+            fi
+            major="${base%%.*}"
+            rest="${base#*.}"
+            minor="${rest%%.*}"
+            patch="${rest#*.}"
+            patch="${patch%%[+-]*}"
+            v="$major.$minor.$((patch + 1))"
+          fi
+          if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$v' is not a plain x.y.z version"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building v$v" >> "$GITHUB_STEP_SUMMARY"
+          node .github/scripts/prepare-ci-config.mjs "$v"
 
       - name: Build
         run: npx tauri build
@@ -80,9 +138,26 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: themia-windows-installer
+          name: themia-windows-installer-${{ steps.version.outputs.version }}
           path: |
             target/release/bundle/nsis/*.exe
             target/release/themia.exe
           if-no-files-found: error
           retention-days: 14
+
+      # The tag is created HERE, not before the build: a failed compile must not
+      # leave a version tag pointing at a commit with no installer behind it.
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "v${VERSION}" \
+            --target "${GITHUB_SHA}" \
+            --title "Themia v${VERSION}" \
+            --generate-notes \
+            target/release/bundle/nsis/*.exe \
+            target/release/themia.exe
+          echo "Released: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}" >> "$GITHUB_STEP_SUMMARY"

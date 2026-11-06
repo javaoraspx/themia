@@ -64,4 +64,11 @@ describe('todo list visual band [S-66] [S-67]', () => {
     expect(rules.some(r => r.selector.includes('.todo-divider::before'))).toBe(true);
     expect(rules.some(r => r.selector.includes('.todo-divider::after'))).toBe(true);
   });
+
+  // [S-68] The band is the fold control: folded, its chevron must point at the
+  // rows it is hiding, or the only affordance for opening them says nothing.
+  it('turns the chevron when the group is folded', () => {
+    const body = rules.find(r => r.selector === '.todo-divider.collapsed .todo-divider-chevron')?.body ?? '';
+    expect(body).toMatch(/rotate\(-90deg\)/);
+  });
 });
