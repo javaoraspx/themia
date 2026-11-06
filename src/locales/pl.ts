@@ -1835,6 +1835,7 @@ export const pl: Messages = {
     reauth: 'Zaloguj się ponownie, aby przyznać uprawnienia To Do',
     networkError: 'Nie można połączyć się z serwerem. Sprawdź połączenie internetowe.',
     addTask: 'Dodaj zadanie',
+    completedGroup: 'Ukończone {count}',
     titlePlaceholder: 'Tytuł zadania',
     overdue: 'zaległe',
     today: 'dzisiaj',

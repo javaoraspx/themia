@@ -1835,6 +1835,7 @@ export const ja: Messages = {
     reauth: '再サインインして To Do の権限を付与してください',
     networkError: 'サーバーに接続できません。インターネット接続を確認してください。',
     addTask: 'タスクを追加',
+    completedGroup: '完了 {count}',
     titlePlaceholder: 'タスクのタイトル',
     overdue: '期限切れ',
     today: '今日',

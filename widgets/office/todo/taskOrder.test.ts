@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder, sinkCompleted, freezeAt } from './taskOrder.ts';
+import {
+  parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder, sinkCompleted, freezeAt,
+  countSettledCompleted, rowBand,
+} from './taskOrder.ts';
 
 const row = (id: string) => ({ id });
 const task = (id: string, status = 'notStarted') => ({ id, status });
@@ -133,6 +136,23 @@ describe('sinkCompleted [S-64]', () => {
   });
 });
 
+describe('rowBand [S-66]', () => {
+  it('puts a settled row in the half its status names', () => {
+    expect(rowBand(task('a'), new Map())).toBe('active');
+    expect(rowBand(task('a', 'completed'), new Map())).toBe('done');
+  });
+
+  // The tick flips `status` in the same frame as the beat starts [S-65], so the
+  // frozen half is what keeps a just-completed row out of the finished group
+  // (and an un-ticked row in it) until the beat is over.
+  it('keeps a frozen row in the half it was ticked in', () => {
+    const held = new Map([['a', { band: 'active' as const, index: 0 }]]);
+    expect(rowBand(task('a', 'completed'), held)).toBe('active');
+    const held2 = new Map([['b', { band: 'done' as const, index: 0 }]]);
+    expect(rowBand(task('b'), held2)).toBe('done');
+  });
+});
+
 describe('freezeAt [S-65]', () => {
   it('leaves the arrangement alone when nothing is frozen', () => {
     const rows = [task('a'), task('b')];
@@ -141,43 +161,64 @@ describe('freezeAt [S-65]', () => {
 
   it('holds a just-completed row at the slot it was ticked in', () => {
     // Ticked 'b' in the middle: the sunk arrangement wants it last, the freeze
-    // keeps it where the click was until its beat is over.
+    // keeps it where the click was — inside the ACTIVE half — until the beat ends.
     const sunk = [task('a'), task('c'), task('b', 'completed')];
-    expect(freezeAt(sunk, new Map([['b', 1]])).map(r => r.id)).toEqual(['a', 'b', 'c']);
+    const held = new Map([['b', { band: 'active' as const, index: 1 }]]);
+    expect(freezeAt(sunk, held).map(r => r.id)).toEqual(['a', 'b', 'c']);
   });
 
-  it('holds an un-ticked row where it was last seen, at the bottom', () => {
-    // 'b' was the last row and has just been un-ticked; the re-derived list
-    // would put it back in the middle, the freeze keeps it at the bottom.
-    const arranged = [task('a'), task('b'), task('c')];
-    expect(freezeAt(arranged, new Map([['b', 2]])).map(r => r.id)).toEqual(['a', 'c', 'b']);
+  it('holds an un-ticked row in the finished half, below the add row', () => {
+    // 'b' was the group's last row and has just been un-ticked. Its status no
+    // longer says `completed`, but the beat has to keep it down there — the half
+    // is carried by the freeze, not by the status.
+    const arranged = [task('a'), task('b'), task('d', 'completed')];
+    const held = new Map([['b', { band: 'done' as const, index: 1 }]]);
+    expect(freezeAt(arranged, held).map(r => r.id)).toEqual(['a', 'd', 'b']);
+    expect(rowBand(task('b'), held)).toBe('done');
   });
 
   it('parks a slot past the end at the end rather than dropping the row', () => {
     const rows = [task('a')];
-    expect(freezeAt(rows, new Map([['a', 7]])).map(r => r.id)).toEqual(['a']);
-    expect(freezeAt(rows, new Map([['a', -3]])).map(r => r.id)).toEqual(['a']);
+    expect(freezeAt(rows, new Map([['a', { band: 'active' as const, index: 7 }]])).map(r => r.id)).toEqual(['a']);
+    expect(freezeAt(rows, new Map([['a', { band: 'active' as const, index: -3 }]])).map(r => r.id)).toEqual(['a']);
   });
 
   it('ignores a frozen id that is no longer in the list', () => {
     const rows = [task('a'), task('b')];
-    expect(freezeAt(rows, new Map([['gone', 0]])).map(r => r.id)).toEqual(['a', 'b']);
+    expect(freezeAt(rows, new Map([['gone', { band: 'active' as const, index: 0 }]])).map(r => r.id)).toEqual(['a', 'b']);
   });
 
   it('inserts several frozen rows in slot order', () => {
     const rows = [task('a'), task('d'), task('b'), task('c')];
-    // Two rows were ticked in the same beat: each returns to the slot it was
-    // frozen at, so their order follows those slots, not the array.
-    expect(freezeAt(rows, new Map([['b', 1], ['d', 2]])).map(r => r.id)).toEqual(['a', 'b', 'd', 'c']);
+    const held = new Map([
+      ['b', { band: 'active' as const, index: 1 }],
+      ['d', { band: 'active' as const, index: 2 }],
+    ]);
+    expect(freezeAt(rows, held).map(r => r.id)).toEqual(['a', 'b', 'd', 'c']);
   });
 
   it('is what makes a tick read as a tick: hold, then sink on release', () => {
-    const rows = [task('a'), task('b'), task('c')];
     const ticked = [task('a'), task('b', 'completed'), task('c')];
-    const frozen = freezeAt(sinkCompleted(ticked), new Map([['b', 1]]));
-    const released = freezeAt(sinkCompleted(ticked), new Map());
-    expect(frozen.map(r => r.id)).toEqual(['a', 'b', 'c']);
-    expect(released.map(r => r.id)).toEqual(['a', 'c', 'b']);
-    expect(rows.map(r => r.id)).toEqual(['a', 'b', 'c']);
+    const held = new Map([['b', { band: 'active' as const, index: 1 }]]);
+    expect(freezeAt(sinkCompleted(ticked), held).map(r => r.id)).toEqual(['a', 'b', 'c']);
+    expect(freezeAt(sinkCompleted(ticked), new Map()).map(r => r.id)).toEqual(['a', 'c', 'b']);
+  });
+});
+
+describe('countSettledCompleted [S-66]', () => {
+  it('counts only completed rows', () => {
+    const rows = [task('a'), task('b', 'completed'), task('c', 'completed')];
+    expect(countSettledCompleted(rows, new Map())).toBe(2);
+    expect(countSettledCompleted([], new Map())).toBe(0);
+  });
+
+  // The divider says how many HAVE arrived. A row still frozen at the slot it
+  // was ticked in [S-65] has not arrived yet, so counting it would flash the
+  // divider (and its number) in for the length of the beat.
+  it('does not count a row that is still settling', () => {
+    const rows = [task('a'), task('b', 'completed')];
+    expect(countSettledCompleted(rows, new Map([['b', { band: 'active' as const, index: 1 }]]))).toBe(0);
+    // Released: it joins the group as it glides down.
+    expect(countSettledCompleted(rows, new Map())).toBe(1);
   });
 });

@@ -117,7 +117,48 @@ export function sinkCompleted<T extends { status: string }>(rows: T[]): T[] {
 }
 
 /**
- * Draw the rows named in `slots` at the index they were frozen at ([S-65]),
+ * How many completed rows the finished group holds right now ([S-66]).
+ *
+ * `held` are the rows still frozen after a tick ([S-65]): they are drawn among
+ * the active tasks, at the slot they were clicked in, and have not joined the
+ * group yet. Counting them would make the divider — and its number — pop in for
+ * the length of the beat and then pop out again, which is exactly the flicker
+ * the beat exists to remove. Held rows join the count the moment they are
+ * released, i.e. as they glide down into the group.
+ */
+export function countSettledCompleted<T extends { id: string; status: string }>(
+  rows: readonly T[],
+  held: ReadonlyMap<string, HeldSlot>,
+): number {
+  let n = 0;
+  for (const row of rows) {
+    if (row.status === 'completed' && !held.has(row.id)) n++;
+  }
+  return n;
+}
+
+/** The two halves a task row can be drawn in ([S-66]): the running list, or the
+ *  finished group under it. */
+export type TaskBand = 'active' | 'done';
+
+/** Where a row was frozen during its beat ([S-65]): the half it was ticked in,
+ *  and its slot *within that half*. */
+export interface HeldSlot {
+  band: TaskBand;
+  index: number;
+}
+
+/** Which half a row is drawn in. A row in its beat keeps the half it was
+ *  ticked in — that is the whole point, since the tick has already changed
+ *  `status` and would otherwise drag the row into the other half before the eye
+ *  has seen the tick. Everything that positions rows reads this, so the array
+ *  order and the band a row is painted in can never disagree. */
+export function rowBand(row: { id: string; status: string }, held: ReadonlyMap<string, HeldSlot>): TaskBand {
+  return held.get(row.id)?.band ?? (row.status === 'completed' ? 'done' : 'active');
+}
+
+/**
+ * Draw the rows named in `held` at the slot they were frozen at ([S-65]),
  * leaving every other row where the arrangement put it.
  *
  * This is the whole trick behind the tick's beat: ticking a box changes the
@@ -126,18 +167,42 @@ export function sinkCompleted<T extends { status: string }>(rows: T[]): T[] {
  * releasing the freeze lets it go — and because this is a rendering step, no
  * state, no config and no backend call is involved either way.
  *
- * Frozen slots are inserted in ascending order so one insertion cannot shift
- * where the next one belongs, and a slot past the end parks the row at the end
- * rather than vanishing. Ids that are no longer in `rows` are ignored.
+ * Slots are per HALF, not per list: the finished group sits below the add row
+ * ([S-67]), and a row being un-ticked has to stay in that group for its beat,
+ * not jump above the add row just because its `status` flipped. So the list is
+ * split by `rowBand` first, each half is frozen against its own indices, and the
+ * halves are put back together.
+ *
+ * Frozen rows are inserted in ascending slot order so one insertion cannot
+ * shift where the next one belongs, and a slot past the end parks the row at the
+ * end rather than vanishing. Ids that are no longer in `rows` are ignored.
  */
-export function freezeAt<T extends { id: string }>(rows: T[], slots: ReadonlyMap<string, number>): T[] {
-  if (!slots.size) return rows;
-  const frozen = rows.filter(r => slots.has(r.id));
-  if (!frozen.length) return rows;
-  const out = rows.filter(r => !slots.has(r.id));
-  frozen.sort((a, b) => slots.get(a.id)! - slots.get(b.id)!);
+export function freezeAt<T extends { id: string; status: string }>(
+  rows: T[],
+  held: ReadonlyMap<string, HeldSlot>,
+): T[] {
+  if (!held.size) return rows;
+  const active: T[] = [];
+  const done: T[] = [];
+  for (const row of rows) (rowBand(row, held) === 'done' ? done : active).push(row);
+  return [
+    ...insertHeld(active, held, 'active'),
+    ...insertHeld(done, held, 'done'),
+  ];
+}
+
+/** Put the rows frozen into `band` back at their recorded slot in it. */
+function insertHeld<T extends { id: string }>(
+  band: T[],
+  held: ReadonlyMap<string, HeldSlot>,
+  which: TaskBand,
+): T[] {
+  const frozen = band.filter(r => held.get(r.id)?.band === which);
+  if (!frozen.length) return band;
+  const out = band.filter(r => held.get(r.id)?.band !== which);
+  frozen.sort((a, b) => held.get(a.id)!.index - held.get(b.id)!.index);
   for (const row of frozen) {
-    const at = Math.min(Math.max(slots.get(row.id)!, 0), out.length);
+    const at = Math.min(Math.max(held.get(row.id)!.index, 0), out.length);
     out.splice(at, 0, row);
   }
   return out;

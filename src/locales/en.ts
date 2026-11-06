@@ -1539,6 +1539,7 @@ export const en = {
     reauth: 'Re-sign in to grant To Do permissions',
     networkError: 'Can’t reach the server. Check your internet connection.',
     addTask: 'Add task',
+    completedGroup: 'Completed {count}',
     titlePlaceholder: 'Task title',
     overdue: 'overdue',
     today: 'today',

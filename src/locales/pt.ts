@@ -1835,6 +1835,7 @@ export const pt: Messages = {
     reauth: 'Entre novamente para conceder permissões do To Do',
     networkError: 'Não foi possível contactar o servidor. Verifique a sua ligação à internet.',
     addTask: 'Adicionar tarefa',
+    completedGroup: 'Concluídas {count}',
     titlePlaceholder: 'Título da tarefa',
     overdue: 'atrasada',
     today: 'hoje',

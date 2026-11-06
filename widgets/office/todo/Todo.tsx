@@ -19,7 +19,10 @@ import {
 } from './localTasks.ts';
 import { findList } from './localLists.ts';
 import { localLists, setLocalListTasks, seedLocalList } from './localListStore.ts';
-import { parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder, sinkCompleted, freezeAt } from './taskOrder.ts';
+import {
+  parseTaskOrder, applyTaskOrder, moveId, rowIndexAtY, sameOrder, sinkCompleted, freezeAt,
+  countSettledCompleted, rowBand, type HeldSlot,
+} from './taskOrder.ts';
 import { resolveDue, isDuePast } from './dueDate.ts';
 import { isTodayList, todayTasks, todayDueDate } from './todayList.ts';
 import { clampTitleLines } from './titleLines.ts';
@@ -205,6 +208,12 @@ export default function Todo(props: TodoProps) {
     return freezeAt(sinkCompleted(arranged), held);
   });
 
+  // [S-66] How many tasks the finished group below the add row holds. A row that
+  // is still frozen [S-65] is not in it yet — it is on its way, drawn among the
+  // active tasks — so the divider appears exactly when the row lands, instead of
+  // flashing in for the length of the beat.
+  const completedCount = createMemo(() => countSettledCompleted(displayTasks(), heldSlots()));
+
   // Which render block to show. A local widget with a list is always "loaded"
   // (an empty list still shows the add-task row); one whose list is gone or
   // never picked shows the same "pick a list" prompt account mode uses ([S-58]),
@@ -347,7 +356,13 @@ export default function Todo(props: TodoProps) {
     // somewhere the user was not looking — or, with completed tasks hidden, made
     // the row vanish under the click. The freeze buys the beat that shows what
     // was ticked; `settle` then lets it go.
-    holdRow(task.id, Math.max(0, rows().findIndex(r => r.id === task.id)));
+    //
+    // The slot is counted inside the row's OWN half ([S-66]): un-ticking a task
+    // at the bottom must hold it in the finished group, not let it hop above the
+    // add row just because the box emptied.
+    const band = rowBand(task, heldSlots());
+    const inBand = rows().filter(r => rowBand(r, heldSlots()) === band);
+    holdRow(task.id, band, Math.max(0, inBand.findIndex(r => r.id === task.id)));
     const leaving = completing && !showCompleted();
 
     if (isLocal()) {
@@ -526,7 +541,7 @@ export default function Todo(props: TodoProps) {
   // that then has to move GLIDES to its new place from where it was (FLIP, since
   // the rows have content-sized heights and cannot be height-animated). A row
   // that is about to leave the list fades before it goes.
-  const [heldSlots, setHeldSlots] = createSignal<ReadonlyMap<string, number>>(new Map());
+  const [heldSlots, setHeldSlots] = createSignal<ReadonlyMap<string, HeldSlot>>(new Map());
   const [leavingIds, setLeavingIds] = createSignal<ReadonlySet<string>>(new Set());
   /** Pending timers per task, so a second click — or an unmount — cancels the beat. */
   const settleTimers = new Map<string, number[]>();
@@ -551,10 +566,11 @@ export default function Todo(props: TodoProps) {
     });
   }
 
-  /** Pin `id` to `index` — its slot on screen right now — until it is released. */
-  function holdRow(id: string, index: number): void {
+  /** Pin `id` to the slot it occupied in `band` — the half it was ticked in —
+   *  until it is released. */
+  function holdRow(id: string, band: HeldSlot['band'], index: number): void {
     cancelSettle(id);
-    setHeldSlots(prev => new Map(prev).set(id, index));
+    setHeldSlots(prev => new Map(prev).set(id, { band, index }));
   }
 
   function releaseRow(id: string): void {
@@ -570,29 +586,57 @@ export default function Todo(props: TodoProps) {
     });
   }
 
-  /** Where every row is right now, in list coordinates.
+  // [S-67] The two chrome bands that sit between the halves. When a row crosses
+  // over the add row, the boundary it crosses has to travel with it, or the list
+  // reads as tearing; so they join the rows in the measurement and the glide.
+  // The keys are prefixed with `#`, which no task id can start with.
+  let addRowEl: HTMLElement | undefined;
+  let dividerEl: HTMLElement | undefined;
+  const CHROME_ADD = '#add-row';
+  const CHROME_DIVIDER = '#divider';
+
+  /** Every element whose position the settle owns, keyed by task id or chrome. */
+  function movingEls(): [string, HTMLElement][] {
+    const out: [string, HTMLElement][] = [...rowEls];
+    if (addRowEl) out.push([CHROME_ADD, addRowEl]);
+    if (dividerEl) out.push([CHROME_DIVIDER, dividerEl]);
+    return out;
+  }
+
+  /** Bind a chrome band into the measurement set, and drop it when the branch
+   *  that rendered it goes away (the add row has two: idle and editing). */
+  function bindAddRow(el: HTMLElement): void {
+    addRowEl = el;
+    onCleanup(() => { if (addRowEl === el) addRowEl = undefined; });
+  }
+  function bindDivider(el: HTMLElement): void {
+    dividerEl = el;
+    onCleanup(() => { if (dividerEl === el) dividerEl = undefined; });
+  }
+
+  /** Where everything is right now, in list coordinates.
    *
    *  Inline transforms from a glide still in flight are cleared FIRST: measuring
    *  a row mid-animation would fold its offset into the number we are about to
    *  use as a starting point, and the row would jump by exactly that much. */
   function measureRows(): Map<string, number> {
-    for (const el of rowEls.values()) { el.style.transition = 'none'; el.style.transform = ''; }
+    for (const [, el] of movingEls()) { el.style.transition = 'none'; el.style.transform = ''; }
     const origin = listEl?.getBoundingClientRect().top ?? 0;
     const tops = new Map<string, number>();
-    for (const [id, el] of rowEls) tops.set(id, el.getBoundingClientRect().top - origin);
-    for (const el of rowEls.values()) el.style.transition = '';
+    for (const [key, el] of movingEls()) tops.set(key, el.getBoundingClientRect().top - origin);
+    for (const [, el] of movingEls()) el.style.transition = '';
     return tops;
   }
 
-  /** Play the difference between `before` and where the rows are now. */
+  /** Play the difference between `before` and where the elements are now. */
   function glide(before: Map<string, number>): void {
     // A drag owns the rows' positions; two mechanisms moving them would fight.
     if (polling || dragId()) return;
     const gen = ++glideGen;
     const origin = listEl?.getBoundingClientRect().top ?? 0;
     const moves: { el: HTMLElement; dy: number }[] = [];
-    for (const [id, el] of rowEls) {
-      const was = before.get(id);
+    for (const [key, el] of movingEls()) {
+      const was = before.get(key);
       if (was === undefined) continue; // not on screen before; nothing to travel from
       const dy = was - (el.getBoundingClientRect().top - origin);
       if (Math.abs(dy) >= 0.5) moves.push({ el, dy });
@@ -979,6 +1023,9 @@ export default function Todo(props: TodoProps) {
                   // the beat, and then (if it cannot stay) faded on its way out.
                   settling: heldSlots().has(task.id),
                   leaving: leavingIds().has(task.id),
+                  // [S-66] Which half it is painted in. Not `done`: a row in its
+                  // beat keeps the half it was ticked in (taskOrder.rowBand).
+                  'in-done': rowBand(task, heldSlots()) === 'done',
                 }}
                 ref={(el) => { rowEls.set(task.id, el); onCleanup(() => rowEls.delete(task.id)); }}
                 onContextMenu={(e) => handleTaskCtx(e, task)}
@@ -1049,13 +1096,19 @@ export default function Todo(props: TodoProps) {
             )}
           </For>
 
+          {/* [S-67] The add row closes the ACTIVE half — it sits above the
+              finished group, not after the archive, so reaching it never means
+              scrolling past tasks that are already done. Its place is set with
+              flex `order`, which keeps this node in one piece: the `<For>` above
+              owns the elements the tick's glide animates ([S-65]) and this
+              field's draft, so neither may be remounted to reposition it. */}
           <Show when={creating()} fallback={
-            <div class="todo-add-row" data-focusable="true" onClick={() => setCreating(true)}>
+            <div class="todo-add-row" data-focusable="true" onClick={() => setCreating(true)} ref={bindAddRow}>
               <Plus size={16} strokeWidth={1.5} />
               <span>{t('todo.addTask')}</span>
             </div>
           }>
-            <div class="todo-add-row editing">
+            <div class="todo-add-row editing" ref={bindAddRow}>
               <Plus size={16} strokeWidth={1.5} />
               {/* [S-32] A textarea, not an input: a long task WRAPS while it is
                   being typed, the same way the rename editor does ([S-50]), so
@@ -1071,6 +1124,15 @@ export default function Todo(props: TodoProps) {
                 onBlur={() => createTask()}
                 ref={(el) => queueMicrotask(() => { growToFit(el); el.focus(); })}
               />
+            </div>
+          </Show>
+
+          {/* [S-66] The finished group starts here. */}
+          <Show when={completedCount() > 0}>
+            <div class="todo-divider" ref={bindDivider}>
+              <span class="todo-divider-label">
+                {t('todo.completedGroup', { count: completedCount() })}
+              </span>
             </div>
           </Show>
         </div>

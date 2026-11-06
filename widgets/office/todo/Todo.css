@@ -52,6 +52,10 @@
   padding: 9px 14px;
   cursor: grab;
   transition: background 0.12s;
+  /* [S-66/S-67] Visual band: active rows 0, the add row 1, the group divider 2,
+     finished rows 3 (`.in-done`). `order` places them without moving a single
+     node out of the `<For>` — see the comment on `.todo-add-row`. */
+  order: 0;
 }
 .todo-item:hover {
   background: var(--card-hover);
@@ -103,6 +107,46 @@
   transition: opacity var(--todo-settle-fade, 150ms) ease-out;
   pointer-events: none;
 }
+
+/* [S-66] Which half a row is painted in. The component decides it
+   (`rowBand`, taskOrder.ts) and marks the row — `done` alone cannot, because a
+   row in its beat ([S-65]) keeps the half it was ticked in even though its
+   status has already flipped. One class, one rule: no specificity race with
+   `.done`, and no way for the paint order to disagree with the array order. */
+.todo-item.in-done {
+  order: 3;
+}
+
+/* [S-66] The band between "what is left" and "what is done". A hairline on each
+   side rather than a rule across the whole row, so it reads as a divider the
+   count sits in, not as a section header competing with the widget's own title
+   bar. Present only while the group has something in it. */
+.todo-divider {
+  order: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px 2px;
+  font-size: calc(10px * var(--font-scale, 1));
+  color: var(--subtle-foreground);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.todo-divider::before,
+.todo-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+/* It appears on the frame the first row lands in the group ([S-65] excludes a
+   row still in its beat from the count), so it fades in rather than popping in
+   beside the row that is already gliding down to it. */
+@keyframes todo-divider-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.todo-divider { animation: todo-divider-in 160ms ease-out; }
 
 /* ── Checkbox ───────────────────────────────────────────────────────── */
 
@@ -199,6 +243,20 @@
   color: var(--muted-foreground);
   font-size: calc(12px * var(--font-scale, 1));
   transition: background 0.12s, color 0.12s;
+  /* [S-67] The add row is the ACTIVE list's last row, so it now sits above the
+     finished group instead of after it — reached without scrolling past the
+     archive, and next to the tasks a new one will join.
+     Two consequences it has to pay for:
+     - `order: 1` places it between the active rows (0) and the divider (2)
+       without moving a single node, so the `<For>` above keeps its identity
+       (the tick's glide [S-65] and this field's draft both depend on that).
+     - A row gliding down into the finished group travels THROUGH this band, so
+       it needs an opaque fill (the body's own `--card`) and its own stacking
+       level, or the two texts blend for the 260ms of the move. */
+  order: 1;
+  position: relative;
+  z-index: 1;
+  background: var(--card);
 }
 .todo-add-row:hover {
   background: var(--card-hover);
@@ -310,4 +368,10 @@
 /* short: hide header */
 @container (max-height: 80px) {
   .todo-widget .widget-header { display: none; }
+}
+
+/* [S-66] The band is information, not decoration: it stays, it just stops
+   fading. (The settle [S-65] is skipped in script, not here.) */
+@media (prefers-reduced-motion: reduce) {
+  .todo-divider { animation: none; }
 }

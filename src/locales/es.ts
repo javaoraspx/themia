@@ -1835,6 +1835,7 @@ export const es: Messages = {
     reauth: 'Vuelve a iniciar sesión para conceder permisos de Tareas',
     networkError: 'No se puede conectar con el servidor. Comprueba tu conexión a internet.',
     addTask: 'Añadir tarea',
+    completedGroup: 'Completadas {count}',
     titlePlaceholder: 'Título de la tarea',
     overdue: 'atrasada',
     today: 'hoy',
