@@ -1,6 +1,15 @@
 import { defineConfig } from 'vitest/config';
+import solid from 'vite-plugin-solid';
 
 export default defineConfig({
+  // Solid's JSX transform, so a test can render a real widget component. This
+  // file is the whole Vite config for the unit suite (Vitest does not merge
+  // vite.config.ts), and without the plugin a `.tsx` import arrives with its
+  // JSX intact — which the runner rejects as "invalid JS syntax" rather than
+  // telling you a plugin is missing. Only component tests pull in `.tsx`; the
+  // pure-logic suites are unaffected, and the explicit `solid-js/*` aliases
+  // below still win over the conditions this plugin adds.
+  plugins: [solid()],
   // Mirror the vite.config build-time constant so modules that reference it
   // (e.g. license.ts gating its test hooks) load under vitest instead of
   // throwing `__THEMIA_TEST_HOOKS__ is not defined`. Tests run with hooks on.
