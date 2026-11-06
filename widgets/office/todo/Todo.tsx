@@ -123,6 +123,13 @@ export default function Todo(props: TodoProps) {
   // can't strand the editor on a stale row.
   const [editingId, setEditingId] = createSignal<string | null>(null);
   const [editTitle, setEditTitle] = createSignal('');
+  // [S-65]/[S-66] Which rows are mid-beat, and the slot each one is frozen at.
+  // Declared HERE, above `displayTasks`, and not with the rest of the settle
+  // machinery below: `createMemo` computes eagerly, so a memo that reads these
+  // at construction time would hit the temporal dead zone and take the whole
+  // widget down with "failed to render". (It did.)
+  const [heldSlots, setHeldSlots] = createSignal<ReadonlyMap<string, HeldSlot>>(new Map());
+  const [leavingIds, setLeavingIds] = createSignal<ReadonlySet<string>>(new Set());
 
   let listEl: HTMLDivElement | undefined;
   // Request-id guard: each load() bumps this before awaiting; a slower in-flight
@@ -541,8 +548,9 @@ export default function Todo(props: TodoProps) {
   // that then has to move GLIDES to its new place from where it was (FLIP, since
   // the rows have content-sized heights and cannot be height-animated). A row
   // that is about to leave the list fades before it goes.
-  const [heldSlots, setHeldSlots] = createSignal<ReadonlyMap<string, HeldSlot>>(new Map());
-  const [leavingIds, setLeavingIds] = createSignal<ReadonlySet<string>>(new Set());
+  // The two signals those rules read (`heldSlots`, `leavingIds`) are declared at
+  // the top of the component: `displayTasks` is a memo, so it reads them while
+  // it is being CREATED, long before this point in the body.
   /** Pending timers per task, so a second click — or an unmount — cancels the beat. */
   const settleTimers = new Map<string, number[]>();
   /** Bumped by every glide, so a stale cleanup cannot clear a newer one. */
