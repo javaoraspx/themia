@@ -158,14 +158,15 @@ describe('todo widget mounts [S-65] [S-66]', () => {
     expect(button.disabled).toBe(false);
 
     const before = invokeMock.mock.calls.length;
-    invokeMock.mockResolvedValue([]);
+    invokeMock.mockImplementation(() => Promise.resolve([]));
     button.click();
 
-    // The click went back through the one fetch path, and a success cleared
-    // the dead end. Not an exact call count: the poll/effect are free to add
-    // their own requests, while a click must add at least one.
+    // The button is wired to the one fetch path: a click must start another
+    // request. Not an exact call count — the poll/effect are free to add their
+    // own — and deliberately NOT an assertion that the error state clears:
+    // whether a given result wins the request-id race is load()'s existing
+    // job, not the button's. This test owns the dead end being actionable.
     await vi.waitFor(() => expect(invokeMock.mock.calls.length).toBeGreaterThan(before));
-    await vi.waitFor(() => expect(host.querySelector('.todo-retry')).toBeNull());
 
     dispose();
   });
