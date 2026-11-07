@@ -135,7 +135,11 @@ describe('todo widget mounts [S-65] [S-66]', () => {
   // hidden in a right-click menu on the widget chrome. This asserts the action
   // is ON the error state and that it re-enters the one fetch path.
   it('offers a visible retry on a network error, and re-fetches', async () => {
-    invokeMock.mockRejectedValueOnce('network_error');
+    // Keep failing until the button is clicked. The mount effect can legitimately
+    // start more than one load (the request-id guard discards the older result),
+    // so a single `RejectedValueOnce` can be spent on a request whose outcome is
+    // thrown away — and the widget would never reach the error state at all.
+    invokeMock.mockRejectedValue('network_error');
 
     const { host, dispose } = mount({
       accountId: 'acct',
@@ -148,9 +152,15 @@ describe('todo widget mounts [S-65] [S-66]', () => {
 
     const button = host.querySelector('.todo-retry') as HTMLButtonElement;
     expect(button.disabled).toBe(false);
+
+    const before = invokeMock.mock.calls.length;
+    invokeMock.mockResolvedValue([]);
     button.click();
 
-    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+    // The click went back through the one fetch path, and a success cleared
+    // the dead end. Not an exact call count: the poll/effect are free to add
+    // their own requests, while a click must add at least one.
+    await vi.waitFor(() => expect(invokeMock.mock.calls.length).toBeGreaterThan(before));
     await vi.waitFor(() => expect(host.querySelector('.todo-retry')).toBeNull());
 
     dispose();
