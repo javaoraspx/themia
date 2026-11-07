@@ -346,6 +346,37 @@
   line-height: 1.5;
 }
 
+/* [S-69] Only the error state stacks a button under its message; the other
+   empty prompts stay a single centred line. The button uses the shared button
+   vocabulary (1px border, no fill of its own, hover from --card-hover) so it
+   reads as part of the widget, not as a dialog control dropped into it. */
+.todo-empty.todo-error {
+  flex-direction: column;
+  gap: 12px;
+}
+
+.todo-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  background: var(--overlay-subtle);
+  color: var(--foreground);
+  font-family: inherit;
+  font-size: calc(11px * var(--font-scale, 1));
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.todo-retry:hover:not(:disabled) { background: var(--card-hover); border-color: var(--ring); }
+.todo-retry:focus-visible { outline: 1.5px solid var(--primary); outline-offset: 1px; }
+.todo-retry:disabled { opacity: 0.65; cursor: default; }
+
+/* The icon spins only while the request is out; `state` stays on 'error' so
+   the explanation is not replaced by a blank spinner mid-retry. */
+.todo-retrying { animation: spin 1s linear infinite; }
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
@@ -395,4 +426,5 @@
 @media (prefers-reduced-motion: reduce) {
   .todo-divider { animation: none; }
   .todo-divider-chevron { transition: none; }
+  .todo-retrying { animation: none; }
 }

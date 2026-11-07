@@ -29,8 +29,11 @@ vi.mock('../../../src/input/widgetKeyboard.ts', () => ({
   registerWidgetKeyboard: () => ({ activate: () => {}, dispose: () => {} }),
 }));
 vi.mock('../../../src/input/appBlur.ts', () => ({ onAppBlur: () => () => {} }));
+// Hoisted so the mock factory can hand the SAME spy to the component and to
+// the assertions below: the retry test has to see how many fetches happened.
+const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock('../../../src/demo/invoke.ts', () => ({
-  invoke: vi.fn(async () => []),
+  invoke: invokeMock,
   isDemo: () => false,
 }));
 vi.mock('../../../src/components/WidgetHeader.tsx', () => ({ default: () => null }));
@@ -49,7 +52,11 @@ function mount(props: TodoProps): { host: HTMLElement; dispose: () => void } {
 }
 
 describe('todo widget mounts [S-65] [S-66]', () => {
-  beforeEach(() => { document.body.innerHTML = ''; });
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue([]);
+  });
 
   it('renders a device list with its bands instead of crashing', () => {
     seedLocalList('list-mount', 'My tasks', [
@@ -120,6 +127,31 @@ describe('todo widget mounts [S-65] [S-66]', () => {
     expect(Array.from(host.querySelectorAll('.todo-title'), el => el.textContent)).toEqual(['Only one']);
     expect(host.querySelector('.todo-divider')).toBeNull();
     expect(host.querySelector('.todo-add-row')).not.toBeNull();
+
+    dispose();
+  });
+
+  // [S-69] "Can't reach the server" used to be a dead end: the only retry was
+  // hidden in a right-click menu on the widget chrome. This asserts the action
+  // is ON the error state and that it re-enters the one fetch path.
+  it('offers a visible retry on a network error, and re-fetches', async () => {
+    invokeMock.mockRejectedValueOnce('network_error');
+
+    const { host, dispose } = mount({
+      accountId: 'acct',
+      listId: 'list-1',
+      _widgetId: 'widget-error',
+    });
+
+    await vi.waitFor(() => expect(host.querySelector('.todo-retry')).not.toBeNull());
+    expect(host.querySelector('.todo-empty-text'), 'keep the explanation on screen').not.toBeNull();
+
+    const button = host.querySelector('.todo-retry') as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    button.click();
+
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(host.querySelector('.todo-retry')).toBeNull());
 
     dispose();
   });

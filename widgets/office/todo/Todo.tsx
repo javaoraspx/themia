@@ -134,6 +134,10 @@ export default function Todo(props: TodoProps) {
   // widget down with "failed to render". (It did.)
   const [heldSlots, setHeldSlots] = createSignal<ReadonlyMap<string, HeldSlot>>(new Map());
   const [leavingIds, setLeavingIds] = createSignal<ReadonlySet<string>>(new Set());
+  // [S-69] The visible retry button on the network-error state is mid-request.
+  // A local flag, not the fetch state machine: leaving `state` on 'error' keeps
+  // the explanation on screen while the button itself shows that it is working.
+  const [retrying, setRetrying] = createSignal(false);
 
   let listEl: HTMLDivElement | undefined;
   // Request-id guard: each load() bumps this before awaiting; a slower in-flight
@@ -357,6 +361,21 @@ export default function Todo(props: TodoProps) {
       }
     } finally {
       if (inFlightSeq === my) inFlightSeq = null;
+    }
+  }
+
+  /** [S-69] The error state's visible retry. It calls the SAME `load()` that
+   *  the poll and the config-change effect use — there is still only one fetch
+   *  path. It deliberately does not write an `_refresh` token into config like
+   *  the chrome right-click menu does: a click here should re-request, not
+   *  persist a timestamp and broadcast it to every other window. */
+  async function retryLoad(): Promise<void> {
+    if (retrying()) return;
+    setRetrying(true);
+    try {
+      await load();
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -1041,9 +1060,22 @@ export default function Todo(props: TodoProps) {
         </div>
       </Show>
 
+      {/* [S-69] A transport failure used to be a dead end: the only retry was
+          a right-click on the widget chrome, which nothing on screen hinted at.
+          The action belongs next to the message it clears. */}
       <Show when={view() === 'error'}>
-        <div class="todo-empty">
+        <div class="todo-empty todo-error">
           <span class="todo-empty-text">{error()}</span>
+          <button
+            type="button"
+            class="todo-retry"
+            disabled={retrying()}
+            aria-label={t('common.refresh')}
+            onClick={retryLoad}
+          >
+            <RefreshCw size={13} strokeWidth={1.5} classList={{ 'todo-retrying': retrying() }} />
+            <span>{t('common.refresh')}</span>
+          </button>
         </div>
       </Show>
 
