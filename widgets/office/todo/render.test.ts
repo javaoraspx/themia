@@ -135,11 +135,12 @@ describe('todo widget mounts [S-65] [S-66]', () => {
   // hidden in a right-click menu on the widget chrome. This asserts the action
   // is ON the error state and that it re-enters the one fetch path.
   it('offers a visible retry on a network error, and re-fetches', async () => {
-    // Keep failing until the button is clicked. The mount effect can legitimately
-    // start more than one load (the request-id guard discards the older result),
-    // so a single `RejectedValueOnce` can be spent on a request whose outcome is
-    // thrown away — and the widget would never reach the error state at all.
-    invokeMock.mockRejectedValue('network_error');
+    // Synchronous throw, not a rejected Promise: load() is async but has not
+    // awaited anything yet, so its catch (and setState('error')) run in the same
+    // tick as the mount. This also keeps failing for every load the mount effect
+    // starts — the request-id guard may discard one of them, and a one-shot
+    // rejection can be spent on a result nobody reads.
+    invokeMock.mockImplementation(() => { throw 'network_error'; });
 
     const { host, dispose } = mount({
       accountId: 'acct',
@@ -147,7 +148,10 @@ describe('todo widget mounts [S-65] [S-66]', () => {
       _widgetId: 'widget-error',
     });
 
-    await vi.waitFor(() => expect(host.querySelector('.todo-retry')).not.toBeNull());
+    await vi.waitFor(
+      () => expect(host.querySelector('.todo-retry'), `rendered: ${host.innerHTML.slice(0, 600)}`).not.toBeNull(),
+      { timeout: 3000, interval: 20 },
+    );
     expect(host.querySelector('.todo-empty-text'), 'keep the explanation on screen').not.toBeNull();
 
     const button = host.querySelector('.todo-retry') as HTMLButtonElement;
