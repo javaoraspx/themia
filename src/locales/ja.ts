@@ -1837,6 +1837,8 @@ export const ja: Messages = {
     addTask: 'タスクを追加',
     errorDetails: 'エラーログを表示',
     offlineTitle: 'サービス利用不可 · 保存済みのタスクを表示',
+    offlineNoCopy: 'サービス利用不可 · ローカルに控えがありません',
+    keepOffline: 'オフラインで続ける',
     offlineMeta: '最終同期 {time}',
     offlinePending: '{count} 件の同期待ち',
     completedGroup: '完了 {count}',

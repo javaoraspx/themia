@@ -1534,6 +1534,8 @@ export const zh: Messages = {
     addTask: '添加任务',
     errorDetails: '查看详细日志',
     offlineTitle: '服务不可用 · 显示本地数据',
+    offlineNoCopy: '服务不可用 · 暂无本地副本',
+    keepOffline: '继续记录（离线）',
     offlineMeta: '上次同步 {time}',
     offlinePending: '{count} 项待同步',
     completedGroup: '已完成 {count}',

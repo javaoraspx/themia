@@ -190,6 +190,22 @@ export function opsForList(ops: readonly PendingOp[], accountId: string | undefi
   return ops.filter(op => cacheKey(op.accountId, op.listId) === key);
 }
 
+/** The queued changes a widget showing `key` must PAINT onto its list — which is
+ *  nearly all of them, plus one exception.
+ *
+ *  A CREATE is the only op that can put a NEW row on screen, so it must belong to
+ *  the list being drawn: the queue is device-wide, and applying it whole would
+ *  drop a task typed offline in one widget into every other To Do widget on the
+ *  desktop. Every other kind addresses a task by id, and ids are unique per list
+ *  — a status/rename/delete for another list simply matches nothing here. That is
+ *  also why they are NOT filtered out: under Today ([S-52]) the rows come from
+ *  many lists, so their ops legitimately belong to a different `listId` than the
+ *  widget's virtual one. */
+export function opsForView(ops: readonly PendingOp[], accountId: string | undefined, listId: string | undefined): PendingOp[] {
+  const key = cacheKey(accountId, listId);
+  return ops.filter(op => op.kind !== 'create' || cacheKey(op.accountId, op.listId) === key);
+}
+
 function isOp(x: unknown): x is PendingOp {
   if (x === null || typeof x !== 'object') return false;
   const o = x as Record<string, unknown>;

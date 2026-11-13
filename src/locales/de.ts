@@ -1836,6 +1836,8 @@ export const de: Messages = {
     addTask: 'Aufgabe hinzufügen',
     errorDetails: 'Fehlerprotokoll anzeigen',
     offlineTitle: 'Dienst nicht erreichbar · gespeicherte Aufgaben',
+    offlineNoCopy: 'Dienst nicht erreichbar · noch nichts gespeichert',
+    keepOffline: 'Offline weiterarbeiten',
     offlineMeta: 'Letzte Synchronisierung {time}',
     offlinePending: '{count} warten auf Synchronisierung',
     completedGroup: 'Erledigt {count}',

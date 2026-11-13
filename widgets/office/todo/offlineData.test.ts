@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import type { TodoTask } from './Todo.tsx';
 import {
   cacheKey, parseCachedLists, getSnapshot, putSnapshot, CACHE_MAX_LISTS,
-  parseOutbox, enqueueOp, dropOp, applyOps, opTarget, opsForList,
+  parseOutbox, enqueueOp, dropOp, applyOps, opTarget, opsForList, opsForView,
   isServiceUnavailable, isRetryableFailure, errorHeadline,
   type CachedTask, type CreateOp, type PendingOp,
 } from './offlineData.ts';
@@ -174,6 +174,23 @@ describe('outbox folding [S-73]', () => {
     expect(opsForList(ops, 'A', 'L1').map(o => o.id)).toEqual(['o1']);
     expect(opsForList(ops, 'B', 'L1').map(o => o.id)).toEqual(['o3']);
     expect(opsForList(ops, 'A', undefined)).toEqual([]);
+  });
+
+  // A create is the only op that can put a ROW on screen, so a device-wide queue
+  // applied whole would drop a task typed in one widget into every other To Do
+  // widget. The rest are matched by task id, which no other list shares — and
+  // they must NOT be filtered by list, or Today ([S-52]) would lose every tick
+  // made on a row that lives in one of the lists it aggregates.
+  it('paints its own creates and every task-addressed op, whatever list it names', () => {
+    const ops: PendingOp[] = [
+      op({ id: 'o1', listId: 'L1' }),
+      op({ id: 'o2', listId: 'L2' }),
+      op({ id: 'o3', accountId: 'B', listId: 'L1' }),
+      { id: 'o4', at: 4, kind: 'status', accountId: 'A', listId: 'L2', taskId: 't2', status: 'completed' },
+      { id: 'o5', at: 5, kind: 'delete', accountId: 'A', listId: 'L1', taskId: 't1' },
+    ];
+    expect(opsForView(ops, 'A', 'L1').map(o => o.id)).toEqual(['o1', 'o4', 'o5']);
+    expect(opsForView(ops, 'A', '__today__').map(o => o.id)).toEqual(['o4', 'o5']);
   });
 
   it('addresses a create by its temp id and everything else by its task id', () => {

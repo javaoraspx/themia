@@ -27,7 +27,7 @@ import { resolveDue, isDuePast } from './dueDate.ts';
 import { isTodayList, todayTasks, todayDueDate } from './todayList.ts';
 import { clampTitleLines } from './titleLines.ts';
 import {
-  cacheKey, applyOps, isServiceUnavailable, isRetryableFailure, errorHeadline,
+  cacheKey, applyOps, opsForView, isServiceUnavailable, isRetryableFailure, errorHeadline,
   type PendingOp,
 } from './offlineData.ts';
 import { outbox, pendingFor, readSnapshot, writeSnapshot, queueOp, removeOp } from './offlineStore.ts';
@@ -227,9 +227,14 @@ export default function Todo(props: TodoProps) {
   const [retrying, setRetrying] = createSignal(false);
   // [S-72] The widget is painting CACHED tasks because the API is unavailable.
   // `offlineAt` is when that snapshot was taken, which is what tells the user
-  // how stale what they are looking at is.
+  // how stale what they are looking at is. `offlineAt() === 0` with `offline()`
+  // true means "chosen to keep working with no copy at all".
   const [offline, setOffline] = createSignal(false);
   const [offlineAt, setOfflineAt] = createSignal(0);
+  // [S-72] The last failure was the SERVICE being down (not a bad request), so
+  // the error state may offer to keep working through it. Separate from
+  // `offline()`: this one is set on the ERROR page, before anything is queued.
+  const [canQueue, setCanQueue] = createSignal(false);
 
   let listEl: HTMLDivElement | undefined;
   // Request-id guard: each load() bumps this before awaiting; a slower in-flight
@@ -429,11 +434,13 @@ export default function Todo(props: TodoProps) {
     if (!ids.length) {
       setState('empty');
       setOffline(false);
+      setCanQueue(false);
       return;
     }
     if (!listId) {
       setState('nolist');
       setOffline(false);
+      setCanQueue(false);
       return;
     }
 
@@ -454,12 +461,13 @@ export default function Todo(props: TodoProps) {
       // BEFORE the queue drained cannot visually undo the user's change for a
       // second. The queue is drained right after (below).
       const pending = outbox();
-      setTasks(applyOps(result, pending));
+      setTasks(applyOps(result, opsForView(pending, effectiveIds()[0], props.listId)));
       setState('loaded');
       setOffline(false);
       setError(null);
       setErrorDetail('');
       setShowDetails(false);
+      setCanQueue(false);
       // [S-74] The service just answered a READ — that is the recovery signal,
       // so the changes made while it was down go out now.
       if (pending.length) queueMicrotask(() => { void flushOutbox(); });
@@ -468,9 +476,11 @@ export default function Todo(props: TodoProps) {
       const err = String(e);
       if (err === 'todo_not_authorized') {
         setOffline(false);
+        setCanQueue(false);
         setState('noauth');
       } else if (err.includes('Account not found') || err === 'no_accounts') {
         setOffline(false);
+        setCanQueue(false);
         setState(ids.length ? 'nolist' : 'empty');
       } else {
         // [S-63] The backend's transport-failure sentinel is the one error the
@@ -498,7 +508,17 @@ export default function Todo(props: TodoProps) {
         // available, and a desktop widget that blanks out because a remote API
         // is having a bad afternoon is worse than one showing them, clearly
         // marked as cached ([S-73]).
-        const snapshot = isServiceUnavailable(headline) ? readSnapshot(snapshotKey()) : undefined;
+        const unavailable = isServiceUnavailable(headline);
+        // [S-72] …and the error state offers a way through it: an outage the
+        // user can keep working across, rather than a dead end until Microsoft
+        // recovers. Offered, not taken automatically — an empty list appearing
+        // where 20 tasks were a minute ago would read as data loss.
+        setCanQueue(unavailable);
+        const snapshot = unavailable ? readSnapshot(snapshotKey()) : undefined;
+        // [S-72] What this widget may paint from the queue: its own creates, plus
+        // every task-addressed op (ids are unique per list, and under Today the
+        // rows belong to other lists).
+        const queued = opsForView(outbox(), effectiveIds()[0], props.listId);
         if (snapshot) {
           // The snapshot records whatever the backend returned, and WITH
           // `showCompleted` off the backend is what drops the finished tasks
@@ -509,8 +529,17 @@ export default function Todo(props: TodoProps) {
           const cached = showCompleted()
             ? snapshot.tasks
             : snapshot.tasks.filter(tk => tk.status !== 'completed');
-          setTasks(applyOps(cached, outbox()));
+          setTasks(applyOps(cached, queued));
           setOfflineAt(snapshot.at);
+          setOffline(true);
+          setState('loaded');
+        } else if (offline() || queued.length > 0) {
+          // [S-72] No copy to show, but the user is already working offline (or
+          // has queued work — including from before a restart). An error page
+          // here would hide the very tasks they wrote while the API was down, so
+          // the list stays, with the banner saying there is no local copy.
+          setTasks(applyOps([], queued));
+          setOfflineAt(0);
           setOffline(true);
           setState('loaded');
         } else {
@@ -531,6 +560,22 @@ export default function Todo(props: TodoProps) {
   function goOfflineNow(): void {
     setOfflineAt(readSnapshot(snapshotKey())?.at ?? Date.now());
     setOffline(true);
+  }
+
+  /** [S-72] The error state's way THROUGH an outage: go on without any cached
+   *  copy. The list is empty — there is nothing to show — but the add row works
+   *  and everything typed there is queued for the server ([S-73]), which is
+   *  precisely what someone wants when the API is down and the thought is not.
+   *
+   *  This is a deliberate click rather than the automatic behaviour, because a
+   *  list that suddenly holds none of the tasks it held a minute ago reads as
+   *  data loss. The banner then says which of the two situations this is
+   *  (`todo.offlineNoCopy`). */
+  function continueOffline(): void {
+    setTasks(applyOps([], opsForView(outbox(), effectiveIds()[0], props.listId)));
+    setOfflineAt(0);
+    setOffline(true);
+    setState('loaded');
   }
 
   /** One queued change on the wire. Every branch mirrors the online write it
@@ -646,11 +691,15 @@ export default function Todo(props: TodoProps) {
   //
   // [S-74] While the widget is painting CACHED data the tick slows to
   // `OFFLINE_RETRY_MS`: its only job then is to notice the recovery, and the
-  // first tick that gets an answer drains the queue. `createPolling` re-arms on
-  // an interval change, so the switch happens the moment `offline` flips.
+  // first tick that gets an answer drains the queue. With NO cached data
+  // (`offlineAt() === 0`) the normal interval stays: there is nothing to protect
+  // from a hundred extra requests and everything to gain from the first
+  // successful fetch, since that is what fills the cache. `createPolling`
+  // re-arms on an interval change, so the switch happens the moment either
+  // signal flips.
   createPolling(
     () => { if (inFlightSeq === null) void load(); },
-    () => (offline() ? OFFLINE_RETRY_MS : refreshInterval()),
+    () => (offline() && offlineAt() > 0 ? OFFLINE_RETRY_MS : refreshInterval()),
     'todo',
   );
 
@@ -1429,6 +1478,20 @@ export default function Todo(props: TodoProps) {
               <ScrollText size={13} strokeWidth={1.5} />
               <span>{t('todo.errorDetails')}</span>
             </button>
+            {/* [S-72] Only for an outage: a rejected request (a 400, a missing
+                list) will reject the queued writes too, so offering to keep
+                working would only stock a queue that cannot drain. */}
+            <Show when={canQueue()}>
+              <button
+                type="button"
+                class="todo-retry todo-queue-btn"
+                aria-label={t('todo.keepOffline')}
+                onClick={continueOffline}
+              >
+                <CloudOff size={13} strokeWidth={1.5} />
+                <span>{t('todo.keepOffline')}</span>
+              </button>
+            </Show>
           </div>
           <Show when={showDetails()}>
             <ErrorDetailBlock at={errorAt()} headline={error() ?? ''} detail={errorDetail()} />
@@ -1445,15 +1508,22 @@ export default function Todo(props: TodoProps) {
         <div class="todo-offline" role="status">
           <div class="todo-offline-main">
             <CloudOff size={12} strokeWidth={1.75} class="todo-offline-icon" />
-            <span class="todo-offline-text">{t('todo.offlineTitle')}</span>
+            {/* Two truths, and they must not be confused: with a snapshot the
+                list below IS the user's tasks (just old), without one it is
+                empty and only what they type now exists. [S-72] */}
+            <span class="todo-offline-text">
+              {offlineAt() > 0 ? t('todo.offlineTitle') : t('todo.offlineNoCopy')}
+            </span>
             <Show when={pendingCount() > 0}>
               <span class="todo-offline-pending">{t('todo.offlinePending', { count: pendingCount() })}</span>
             </Show>
           </div>
           <div class="todo-offline-foot">
-            <span class="todo-offline-time">
-              {t('todo.offlineMeta', { time: new Date(offlineAt()).toLocaleTimeString(lang(), { hour: '2-digit', minute: '2-digit' }) })}
-            </span>
+            <Show when={offlineAt() > 0}>
+              <span class="todo-offline-time">
+                {t('todo.offlineMeta', { time: new Date(offlineAt()).toLocaleTimeString(lang(), { hour: '2-digit', minute: '2-digit' }) })}
+              </span>
+            </Show>
             <div class="todo-offline-actions">
               <Show when={errorDetail()}>
                 <button

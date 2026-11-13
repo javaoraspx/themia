@@ -179,6 +179,10 @@ describe('todo widget mounts [S-65] [S-66]', () => {
     expect(toggle!.getAttribute('aria-expanded')).toBe('false');
     expect(host.querySelector('.todo-error-detail'), 'folded until asked').toBeNull();
 
+    // [S-72] An outage also offers the one way forward it allows: keep working
+    // with no cached copy, queueing whatever is typed for the recovery.
+    expect(host.querySelector('.todo-queue-btn'), 'an outage offers to keep working').not.toBeNull();
+
     // No local copy: a response body may contain paths and server internals.
     const persisted = Object.keys(window.localStorage).filter(k => /error|log/i.test(k));
     expect(persisted, 'detail must not be written to local storage').toEqual([]);
@@ -215,6 +219,25 @@ describe('todo widget mounts [S-65] [S-66]', () => {
     expect(Array.from(host.querySelectorAll('.todo-title'), el => el.textContent)).toEqual(['From the cache']);
     expect(host.querySelector('.todo-add-row'), 'offline tasks are still addable').not.toBeNull();
     expect(host.querySelector('.todo-empty.todo-error'), 'no error page over the data').toBeNull();
+
+    dispose();
+  });
+
+  // [S-72] A rejected request is not an outage: queueing writes against a list
+  // the server refuses would stock a queue that can never drain. No offer, and
+  // the error page keeps its retry.
+  it('does not offer to keep working when the request itself was rejected', async () => {
+    invokeMock.mockImplementation(() => { throw 'Graph API error 400'; });
+
+    const { host, dispose } = mount({
+      accountId: 'acct-400',
+      listId: 'list-400',
+      _widgetId: 'widget-400',
+    });
+
+    await vi.waitFor(() => expect(host.querySelector('.todo-empty-text')?.textContent).toContain('400'));
+    expect(host.querySelector('.todo-queue-btn')).toBeNull();
+    expect(host.querySelector('.todo-retry'), 'retry is still the way out').not.toBeNull();
 
     dispose();
   });

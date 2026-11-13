@@ -1837,6 +1837,8 @@ export const pl: Messages = {
     addTask: 'Dodaj zadanie',
     errorDetails: 'Pokaż dziennik błędów',
     offlineTitle: 'Usługa niedostępna · zapisane zadania',
+    offlineNoCopy: 'Usługa niedostępna · brak lokalnej kopii',
+    keepOffline: 'Pracuj offline',
     offlineMeta: 'Ostatnia synchronizacja {time}',
     offlinePending: '{count} oczekuje na synchronizację',
     completedGroup: 'Ukończone {count}',

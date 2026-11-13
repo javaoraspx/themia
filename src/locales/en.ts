@@ -1541,6 +1541,8 @@ export const en = {
     addTask: 'Add task',
     errorDetails: 'View error log',
     offlineTitle: 'Service unavailable · showing saved tasks',
+    offlineNoCopy: 'Service unavailable · nothing cached yet',
+    keepOffline: 'Keep working offline',
     offlineMeta: 'Last sync {time}',
     offlinePending: '{count} waiting to sync',
     completedGroup: 'Completed {count}',

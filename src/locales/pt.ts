@@ -1837,6 +1837,8 @@ export const pt: Messages = {
     addTask: 'Adicionar tarefa',
     errorDetails: 'Ver log de erros',
     offlineTitle: 'Serviço indisponível · a mostrar tarefas guardadas',
+    offlineNoCopy: 'Serviço indisponível · ainda sem cópia local',
+    keepOffline: 'Continuar offline',
     offlineMeta: 'Última sincronização {time}',
     offlinePending: '{count} a aguardar sincronização',
     completedGroup: 'Concluídas {count}',

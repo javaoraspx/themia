@@ -1837,6 +1837,8 @@ export const it: Messages = {
     addTask: 'Aggiungi attività',
     errorDetails: 'Visualizza log errori',
     offlineTitle: 'Servizio non disponibile · attività salvate',
+    offlineNoCopy: 'Servizio non disponibile · nessuna copia locale',
+    keepOffline: 'Continua offline',
     offlineMeta: 'Ultima sincronizzazione {time}',
     offlinePending: '{count} in attesa di sincronizzazione',
     completedGroup: 'Completate {count}',
