@@ -150,6 +150,27 @@ fn net_error(what: &str, e: &reqwest::Error) -> String {
     NETWORK_ERROR.to_string()
 }
 
+/// [S-70] A Graph HTTP failure the user can inspect.
+///
+/// First line stays the short sentence the widget has always shown
+/// ("Graph API error 502"); the lines after it are the detail block, which the
+/// widget keeps in memory behind a "view error log" toggle. Graph's 5xx bodies
+/// carry the useful part (`error.code` / `error.message`), and a bare status was
+/// never enough to tell a transient Bad Gateway from a broken request.
+///
+/// Nothing is written to the log file here: the detail travels back with the
+/// error and dies with the window. `resp.text()` is the only I/O, and a failure
+/// to read it is reported rather than defaulted away.
+fn graph_error_detail(status: u16, url: &str, body: &str) -> String {
+    let short: String = body.trim().chars().take(600).collect();
+    let mut out = format!("Graph API error {status}\nrequest: {url}");
+    if !short.is_empty() {
+        out.push_str("\nresponse: ");
+        out.push_str(&short);
+    }
+    out
+}
+
 /// Parse a `Retry-After` response header. Graph/Gmail send delta-seconds
 /// (`"120"`); we accept that form. An absent or unparseable value yields `None`
 /// so the caller falls back to exponential backoff. (HTTP-date form is rare for
@@ -1310,7 +1331,33 @@ mod pagination_tests {
             .await;
 
         let res = graph_todo_lists_core(&base, "tok", &reqwest::Client::new()).await;
-        assert_eq!(res.err().as_deref(), Some("Graph API error 429"));
+        let err = res.err().expect("429 should surface an error");
+        // [S-70] The status is still the first line the widget shows; the body
+        // travels with it as an inspectable detail block instead of being lost.
+        assert!(err.starts_with("Graph API error 429"), "{err}");
+        assert!(err.contains("response: throttled"), "{err}");
+    }
+
+    // [S-70] The 502 the widget could say nothing useful about: Graph's error
+    // body is the part that distinguishes a transient Bad Gateway from a bad
+    // request, and it must reach the in-memory detail view, never a log file.
+    #[tokio::test]
+    async fn s70_graph_502_carries_the_response_detail() {
+        let mut server = mockito::Server::new_async().await;
+        let base = server.url();
+        let _m = server
+            .mock("GET", mockito::Matcher::Any)
+            .with_status(502)
+            .with_body(r#"{"error":{"code":"BadGateway","message":"upstream timeout"}}"#)
+            .create_async()
+            .await;
+
+        let res = graph_todo_tasks_core(&base, "tok", &reqwest::Client::new(), "L1").await;
+        let err = res.err().expect("502 should surface an error");
+        assert!(err.starts_with("Graph API error 502\n"), "{err}");
+        assert!(err.contains("request: "), "{err}");
+        assert!(err.contains("/v1.0/me/todo/lists/L1/tasks"), "{err}");
+        assert!(err.contains("BadGateway"), "{err}");
     }
 
     // [S-63] Regression, issue nwalser/themia-releases#113: a transport failure
@@ -7685,11 +7732,10 @@ async fn graph_todo_lists_core(
 
     if !resp.status().is_success() {
         let s = resp.status().as_u16();
-        return Err(if s == 403 {
-            "todo_not_authorized".into()
-        } else {
-            format!("Graph API error {s}")
-        });
+        if s == 403 { return Err("todo_not_authorized".into()); }
+        let body = resp.text().await
+            .unwrap_or_else(|e| format!("<response body unreadable: {e}>"));
+        return Err(graph_error_detail(s, &url, &body));
     }
 
     let graph: GraphTodoListsResp = resp.json().await.map_err(|e| e.to_string())?;
@@ -7869,11 +7915,10 @@ async fn graph_todo_tasks_core(
 
         if !resp.status().is_success() {
             let s = resp.status().as_u16();
-            return Err(if s == 403 {
-                "todo_not_authorized".into()
-            } else {
-                format!("Graph API error {s}")
-            });
+            if s == 403 { return Err("todo_not_authorized".into()); }
+            let body = resp.text().await
+                .unwrap_or_else(|e| format!("<response body unreadable: {e}>"));
+            return Err(graph_error_detail(s, &url, &body));
         }
 
         let graph: GraphTodoTasksResp = resp.json().await.map_err(|e| e.to_string())?;

@@ -1835,6 +1835,7 @@ export const fr: Messages = {
     reauth: 'Reconnectez-vous pour accorder les permissions To Do',
     networkError: 'Serveur injoignable. Vérifiez votre connexion internet.',
     addTask: 'Ajouter une tâche',
+    errorDetails: 'Voir le journal des erreurs',
     completedGroup: 'Terminées {count}',
     titlePlaceholder: 'Titre de la tâche',
     overdue: 'en retard',

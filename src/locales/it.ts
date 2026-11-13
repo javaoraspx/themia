@@ -1835,6 +1835,7 @@ export const it: Messages = {
     reauth: 'Accedi di nuovo per concedere le autorizzazioni di To Do',
     networkError: 'Impossibile raggiungere il server. Controlla la connessione a internet.',
     addTask: 'Aggiungi attività',
+    errorDetails: 'Visualizza log errori',
     completedGroup: 'Completate {count}',
     titlePlaceholder: 'Titolo dell’attività',
     overdue: 'in ritardo',

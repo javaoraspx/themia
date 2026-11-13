@@ -377,6 +377,55 @@
    the explanation is not replaced by a blank spinner mid-retry. */
 .todo-retrying { animation: spin 1s linear infinite; }
 
+/* [S-69]/[S-70] Retry and "view error log" sit together under the message.
+   Wrapping keeps both reachable in a narrow widget (220px default). */
+.todo-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.todo-details-toggle[aria-expanded="true"] {
+  border-color: var(--ring);
+  background: var(--card-hover);
+}
+
+/* [S-70] The detail is a small read-only panel, not a dialog: it is part of
+   the error state and disappears with it. Everything shown here came back with
+   the failed request and exists only in memory. */
+.todo-error-detail {
+  width: 100%;
+  max-height: 120px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--overlay-subtle);
+  padding: 7px 9px;
+  font-size: calc(10px * var(--font-scale, 1));
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  text-align: left;
+}
+.todo-error-detail::-webkit-scrollbar { display: none; }
+.todo-error-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--subtle-foreground);
+}
+.todo-error-time { font-variant-numeric: tabular-nums; }
+.todo-error-body {
+  margin: 6px 0 0;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--foreground);
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

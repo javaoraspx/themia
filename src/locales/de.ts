@@ -1834,6 +1834,7 @@ export const de: Messages = {
     reauth: 'Neu anmelden, um Aufgaben-Berechtigungen zu erteilen',
     networkError: 'Server nicht erreichbar. Prüfe deine Internetverbindung.',
     addTask: 'Aufgabe hinzufügen',
+    errorDetails: 'Fehlerprotokoll anzeigen',
     completedGroup: 'Erledigt {count}',
     titlePlaceholder: 'Aufgabentitel',
     overdue: 'überfällig',

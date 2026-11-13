@@ -170,4 +170,38 @@ describe('todo widget mounts [S-65] [S-66]', () => {
 
     dispose();
   });
+
+  // [S-70] "Graph API error 502" alone says nothing about why. The detail the
+  // backend attached must be reachable in the widget, must NOT be part of the
+  // headline, and must never be persisted anywhere.
+  it('shows a Graph 502 detail behind a toggle, in memory only', async () => {
+    invokeMock.mockImplementation(() => {
+      throw 'Graph API error 502\nrequest: /v1.0/me/todo/lists/L1/tasks\nresponse: {"error":{"code":"BadGateway"}}';
+    });
+
+    const { host, dispose } = mount({
+      accountId: 'acct',
+      listId: 'L1',
+      _widgetId: 'widget-502',
+    });
+
+    await vi.waitFor(() => expect(host.querySelector('.todo-empty-text')?.textContent).toContain('502'));
+    expect(host.querySelector('.todo-empty-text')!.textContent, 'headline stays short').not.toContain('request:');
+
+    const toggle = host.querySelector('.todo-details-toggle') as HTMLButtonElement;
+    expect(toggle, 'the error offers a way to inspect it').not.toBeNull();
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(host.querySelector('.todo-error-detail')).toBeNull();
+
+    toggle.click();
+    await vi.waitFor(() => expect(host.querySelector('.todo-error-body')?.textContent).toContain('BadGateway'));
+    expect(host.querySelector('.todo-error-body')!.textContent).toContain('/v1.0/me/todo/lists/L1/tasks');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+    // No local copy: a response body may contain paths and server internals.
+    const persisted = Object.keys(window.localStorage).filter(k => /error|log/i.test(k));
+    expect(persisted, 'detail must not be written to local storage').toEqual([]);
+
+    dispose();
+  });
 });

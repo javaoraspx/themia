@@ -1532,6 +1532,7 @@ export const zh: Messages = {
     reauth: '重新登录以授予待办事项权限',
     networkError: '无法连接服务器，请检查网络连接。',
     addTask: '添加任务',
+    errorDetails: '查看详细日志',
     completedGroup: '已完成 {count}',
     titlePlaceholder: '任务标题',
     overdue: '已逾期',

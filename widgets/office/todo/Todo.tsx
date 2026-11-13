@@ -3,7 +3,7 @@ import { createPolling } from '../../../src/createPolling';
 import { Show, For } from 'solid-js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke, isDemo } from '../../../src/demo/invoke.ts';
-import { CheckSquare, Square, RefreshCw, Circle, CheckCircle2, Plus, Trash2, Pencil, ChevronDown } from 'lucide-solid';
+import { CheckSquare, Square, RefreshCw, Circle, CheckCircle2, Plus, Trash2, Pencil, ChevronDown, ScrollText } from 'lucide-solid';
 import { showCtxMenu } from '../../../src/ctxMenuStore.ts';
 import { registerWidgetKeyboard, type WidgetKeyEvent } from '../../../src/input/widgetKeyboard.ts';
 import { onAppBlur } from '../../../src/input/appBlur.ts';
@@ -118,6 +118,12 @@ export default function Todo(props: TodoProps) {
   const [state, setState] = createSignal<'loading' | 'loaded' | 'empty' | 'nolist' | 'noauth' | 'error'>('loading');
   const [tasks, setTasks] = createSignal<TodoTask[]>([]);
   const [error, setError] = createSignal<string | null>(null);
+  // [S-70] The error's detail block, when the backend sent one. In-memory ONLY:
+  // never written to config, localStorage or a log file, so a server response
+  // body (which can carry paths and addresses) cannot outlive the window.
+  const [errorDetail, setErrorDetail] = createSignal('');
+  const [errorAt, setErrorAt] = createSignal(0);
+  const [showDetails, setShowDetails] = createSignal(false);
   const [canScrollDown, setCanScrollDown] = createSignal(false);
   const [creating, setCreating] = createSignal(false);
   const [newTitle, setNewTitle] = createSignal('');
@@ -356,7 +362,15 @@ export default function Todo(props: TodoProps) {
         // [S-63] The backend's transport-failure sentinel is the one error the
         // user can act on, so it gets a sentence in their language instead of
         // reqwest's URL-shaped one.
-        setError(err === 'network_error' ? t('todo.networkError') : err);
+        // [S-70] Everything after the first newline is a detail block the
+        // backend attached for the "view error log" toggle. It is NOT part of
+        // the headline, and it is NOT persisted anywhere.
+        const nl = err.indexOf('\n');
+        const headline = nl < 0 ? err : err.slice(0, nl);
+        setError(headline === 'network_error' ? t('todo.networkError') : headline);
+        setErrorDetail(nl < 0 ? '' : err.slice(nl + 1).trim());
+        setErrorAt(Date.now());
+        setShowDetails(false);
         setState('error');
       }
     } finally {
@@ -1066,16 +1080,43 @@ export default function Todo(props: TodoProps) {
       <Show when={view() === 'error'}>
         <div class="todo-empty todo-error">
           <span class="todo-empty-text">{error()}</span>
-          <button
-            type="button"
-            class="todo-retry"
-            disabled={retrying()}
-            aria-label={t('common.refresh')}
-            onClick={retryLoad}
-          >
-            <RefreshCw size={13} strokeWidth={1.5} classList={{ 'todo-retrying': retrying() }} />
-            <span>{t('common.refresh')}</span>
-          </button>
+          <div class="todo-error-actions">
+            {/* [S-69] The visible retry. */}
+            <button
+              type="button"
+              class="todo-retry"
+              disabled={retrying()}
+              aria-label={t('common.refresh')}
+              onClick={retryLoad}
+            >
+              <RefreshCw size={13} strokeWidth={1.5} classList={{ 'todo-retrying': retrying() }} />
+              <span>{t('common.refresh')}</span>
+            </button>
+            {/* [S-70] "Graph API error 502" says nothing about WHY. The detail
+                block the backend attached lives in memory only, so this toggle
+                is the whole feature: no file, no config, no localStorage. */}
+            <button
+              type="button"
+              class="todo-retry todo-details-toggle"
+              aria-expanded={showDetails()}
+              aria-label={t('todo.errorDetails')}
+              onClick={() => setShowDetails(v => !v)}
+            >
+              <ScrollText size={13} strokeWidth={1.5} />
+              <span>{t('todo.errorDetails')}</span>
+            </button>
+          </div>
+          <Show when={showDetails()}>
+            <div class="todo-error-detail">
+              <div class="todo-error-meta">
+                <span class="todo-error-time">{new Date(errorAt()).toLocaleTimeString(lang())}</span>
+                <span>{error()}</span>
+              </div>
+              <Show when={errorDetail()}>
+                {(detail) => <pre class="todo-error-body">{detail()}</pre>}
+              </Show>
+            </div>
+          </Show>
         </div>
       </Show>
 
