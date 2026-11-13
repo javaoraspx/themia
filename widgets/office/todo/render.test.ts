@@ -194,7 +194,19 @@ describe('todo widget mounts [S-65] [S-66]', () => {
     expect(host.querySelector('.todo-error-detail')).toBeNull();
 
     toggle.click();
-    await vi.waitFor(() => expect(host.querySelector('.todo-error-body')?.textContent).toContain('BadGateway'));
+    // Two stages on purpose: if the detail block is empty the panel still
+    // renders, and the assertion message shows exactly what came out.
+    await vi.waitFor(
+      () => expect(
+        host.querySelector('.todo-error-detail'),
+        `after toggle: ${host.innerHTML.slice(0, 1200)}`,
+      ).not.toBeNull(),
+      { timeout: 2000, interval: 20 },
+    );
+    await vi.waitFor(
+      () => expect(host.querySelector('.todo-error-body')?.textContent ?? '').toContain('BadGateway'),
+      { timeout: 2000, interval: 20 },
+    );
     expect(host.querySelector('.todo-error-body')!.textContent).toContain('/v1.0/me/todo/lists/L1/tasks');
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
 
