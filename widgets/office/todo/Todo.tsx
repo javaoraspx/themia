@@ -3,7 +3,7 @@ import { createPolling } from '../../../src/createPolling';
 import { Show, For } from 'solid-js';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { invoke, isDemo } from '../../../src/demo/invoke.ts';
-import { CheckSquare, Square, RefreshCw, Circle, CheckCircle2, Plus, Trash2, Pencil, ChevronDown, ScrollText } from 'lucide-solid';
+import { CheckSquare, Square, RefreshCw, Circle, CheckCircle2, Plus, Trash2, Pencil, ChevronDown, ScrollText, CloudOff, Copy, Check } from 'lucide-solid';
 import { showCtxMenu } from '../../../src/ctxMenuStore.ts';
 import { registerWidgetKeyboard, type WidgetKeyEvent } from '../../../src/input/widgetKeyboard.ts';
 import { onAppBlur } from '../../../src/input/appBlur.ts';
@@ -26,6 +26,11 @@ import {
 import { resolveDue, isDuePast } from './dueDate.ts';
 import { isTodayList, todayTasks, todayDueDate } from './todayList.ts';
 import { clampTitleLines } from './titleLines.ts';
+import {
+  cacheKey, applyOps, isServiceUnavailable, isRetryableFailure, errorHeadline,
+  type PendingOp,
+} from './offlineData.ts';
+import { outbox, pendingFor, readSnapshot, writeSnapshot, queueOp, removeOp } from './offlineStore.ts';
 import './Todo.css';
 
 export interface TodoProps {
@@ -65,7 +70,9 @@ export interface TodoProps {
   _refresh?: number;
 }
 
-interface TodoTask {
+/** Exported for the type-level check in `offlineData.test.ts`: the cached copy
+ *  of a task and the row this component renders must never drift apart. */
+export interface TodoTask {
   id: string;
   title: string;
   status: string;
@@ -105,12 +112,86 @@ const SETTLE_FADE_MS = 150;
 /** The glide itself. */
 const SETTLE_GLIDE_MS = 260;
 
+/** [S-74] How often a widget showing CACHED data asks the server whether it is
+ *  back. Ten minutes, not the normal refresh interval: the normal one exists to
+ *  keep a live list current, while this one exists to notice a recovery, and a
+ *  server that is answering 502 to every request does not get asked every
+ *  minute by every To Do widget on the desktop. A successful fetch drains the
+ *  queue ([S-74]) and restores the normal interval, so the wait costs at most
+ *  one interval of staleness after the API returns. */
+const OFFLINE_RETRY_MS = 10 * 60 * 1000;
+
+/** [S-73]/[S-74] Ids for queued changes. Opaque: the queue is only ever
+ *  filtered by id. */
+function newOpId(): string {
+  return `op-${crypto.randomUUID()}`;
+}
+
 /** [S-50] Size the title editor to its content, so a long title is fully
  *  visible while it is being edited (the display clamps, the editor never
  *  does). Reset to `auto` first or the box can only ever grow. */
 function growToFit(el: HTMLTextAreaElement): void {
   el.style.height = 'auto';
   el.style.height = `${el.scrollHeight}px`;
+}
+
+/** [S-71] The read-only failure panel, used by BOTH the error state ([S-69]) and
+ *  the offline banner ([S-73]) — the same block, because it is the same
+ *  question ("what did the server actually say?").
+ *
+ *  It owns one thing the caller must not: the COPY. A status code and a Graph
+ *  error body are exactly what one pastes into a bug report, so the panel that
+ *  shows them has to be able to hand them over. The copied text is time +
+ *  headline + detail, the three things on screen — nothing is read back from
+ *  anywhere else, and nothing is written down ([S-70] still holds: the detail
+ *  never touches storage). */
+function ErrorDetailBlock(props: { at: number; headline: string; detail: string }) {
+  const [copied, setCopied] = createSignal(false);
+  let resetTimer: number | undefined;
+  onCleanup(() => { if (resetTimer !== undefined) clearTimeout(resetTimer); });
+
+  function copy(): void {
+    const text = [new Date(props.at).toLocaleString(lang()), props.headline, props.detail]
+      .filter(part => !!part)
+      .join('\n');
+    // No clipboard in the picker preview / jsdom: the button simply does
+    // nothing rather than throwing out of a click handler.
+    try {
+      void navigator.clipboard.writeText(text).then(() => {
+        setCopied(true);
+        if (resetTimer !== undefined) clearTimeout(resetTimer);
+        resetTimer = window.setTimeout(() => setCopied(false), 1600);
+      }).catch(() => {});
+    } catch {
+      // ignore: no clipboard available in this host
+    }
+  }
+
+  return (
+    <div class="todo-error-detail">
+      <div class="todo-error-head">
+        <div class="todo-error-meta">
+          <span class="todo-error-time">{new Date(props.at).toLocaleTimeString(lang())}</span>
+          <span>{props.headline}</span>
+        </div>
+        <button
+          type="button"
+          class="todo-copy"
+          classList={{ copied: copied() }}
+          aria-label={t('common.copy')}
+          onClick={copy}
+        >
+          <Show when={copied()} fallback={<Copy size={11} strokeWidth={1.75} />}>
+            <Check size={11} strokeWidth={2.25} />
+          </Show>
+          <span>{copied() ? t('toast.copied') : t('common.copy')}</span>
+        </button>
+      </div>
+      <Show when={props.detail}>
+        <pre class="todo-error-body">{props.detail}</pre>
+      </Show>
+    </div>
+  );
 }
 
 export default function Todo(props: TodoProps) {
@@ -144,6 +225,11 @@ export default function Todo(props: TodoProps) {
   // A local flag, not the fetch state machine: leaving `state` on 'error' keeps
   // the explanation on screen while the button itself shows that it is working.
   const [retrying, setRetrying] = createSignal(false);
+  // [S-72] The widget is painting CACHED tasks because the API is unavailable.
+  // `offlineAt` is when that snapshot was taken, which is what tells the user
+  // how stale what they are looking at is.
+  const [offline, setOffline] = createSignal(false);
+  const [offlineAt, setOfflineAt] = createSignal(0);
 
   let listEl: HTMLDivElement | undefined;
   // Request-id guard: each load() bumps this before awaiting; a slower in-flight
@@ -164,6 +250,14 @@ export default function Todo(props: TodoProps) {
     const id = props.accountId;
     return ids?.length ? ids : id ? [id] : [];
   });
+
+  // [S-72] Which stored snapshot this widget reads and writes: one per list on
+  // one account, so two widgets on the same list share it and a widget that has
+  // not picked a list yet cannot read someone else's.
+  const snapshotKey = () => cacheKey(effectiveIds()[0], props.listId);
+  // [S-73] How many of the queued changes belong to THIS list — the number the
+  // offline banner reports. The queue itself is device-wide ([S-74]).
+  const pendingCount = createMemo(() => pendingFor(effectiveIds()[0], props.listId).length);
 
   const viewMode = () => props.viewMode ?? 'list';
   const showCompleted = () => props.showCompleted ?? false;
@@ -334,10 +428,12 @@ export default function Todo(props: TodoProps) {
     if (!listId && isDemo()) listId = 'demo-list';
     if (!ids.length) {
       setState('empty');
+      setOffline(false);
       return;
     }
     if (!listId) {
       setState('nolist');
+      setOffline(false);
       return;
     }
 
@@ -349,14 +445,32 @@ export default function Todo(props: TodoProps) {
         showCompleted: showCompleted(),
       });
       if (my !== loadSeq) return;
-      setTasks(result);
+      // [S-72] The snapshot is the server's OWN answer, taken before any queued
+      // change is layered on: `applyOps` is idempotent only if the cache holds
+      // intent-free data, and a "create" folded into the cache would be appended
+      // again on every read.
+      writeSnapshot(snapshotKey(), result);
+      // [S-74] Anything still queued is re-applied on top, so a poll that lands
+      // BEFORE the queue drained cannot visually undo the user's change for a
+      // second. The queue is drained right after (below).
+      const pending = outbox();
+      setTasks(applyOps(result, pending));
       setState('loaded');
+      setOffline(false);
+      setError(null);
+      setErrorDetail('');
+      setShowDetails(false);
+      // [S-74] The service just answered a READ — that is the recovery signal,
+      // so the changes made while it was down go out now.
+      if (pending.length) queueMicrotask(() => { void flushOutbox(); });
     } catch (e) {
       if (my !== loadSeq) return;
       const err = String(e);
       if (err === 'todo_not_authorized') {
+        setOffline(false);
         setState('noauth');
       } else if (err.includes('Account not found') || err === 'no_accounts') {
+        setOffline(false);
         setState(ids.length ? 'nolist' : 'empty');
       } else {
         // [S-63] The backend's transport-failure sentinel is the one error the
@@ -379,11 +493,123 @@ export default function Todo(props: TodoProps) {
         setError(shown);
         setErrorDetail(detail);
         setErrorAt(Date.now());
-        setState('error');
+        // [S-72] A 5xx / transport failure is exactly what the cache is for: the
+        // tasks this widget showed a minute ago are still the best answer
+        // available, and a desktop widget that blanks out because a remote API
+        // is having a bad afternoon is worse than one showing them, clearly
+        // marked as cached ([S-73]).
+        const snapshot = isServiceUnavailable(headline) ? readSnapshot(snapshotKey()) : undefined;
+        if (snapshot) {
+          // The snapshot records whatever the backend returned, and WITH
+          // `showCompleted` off the backend is what drops the finished tasks
+          // ([S-46] in account mode is a server-side filter). Offline there is
+          // no fetch to ask, so the same filter is applied here — otherwise a
+          // snapshot taken with the archive visible would paint it back on for
+          // someone who has it hidden.
+          const cached = showCompleted()
+            ? snapshot.tasks
+            : snapshot.tasks.filter(tk => tk.status !== 'completed');
+          setTasks(applyOps(cached, outbox()));
+          setOfflineAt(snapshot.at);
+          setOffline(true);
+          setState('loaded');
+        } else {
+          setOffline(false);
+          setState('error');
+        }
       }
     } finally {
       if (inFlightSeq === my) inFlightSeq = null;
     }
+  }
+
+  // ── Offline queue ([S-73]/[S-74]) ──────────────────────────────────────────
+  /** [S-73] Switch to the cached view because a WRITE found the service down:
+   *  the read path has not polled since, so nothing else has noticed yet.
+   *  `offlineAt` reports the last snapshot we hold; "now" is the fallback, which
+   *  is honest — the rows on screen came from a fetch that had just succeeded. */
+  function goOfflineNow(): void {
+    setOfflineAt(readSnapshot(snapshotKey())?.at ?? Date.now());
+    setOffline(true);
+  }
+
+  /** One queued change on the wire. Every branch mirrors the online write it
+   *  was captured from, with the account + list the op carries — a queue that
+   *  sat through a restart may be drained by a widget showing another list. */
+  async function sendOp(op: PendingOp): Promise<void> {
+    switch (op.kind) {
+      case 'create':
+        await invoke('todo_create_task', {
+          accountId: op.accountId,
+          listId: op.listId,
+          title: op.title,
+          ...(op.dueDate ? { dueDate: op.dueDate } : {}),
+        });
+        return;
+      case 'status':
+        await invoke('todo_update_task', {
+          accountId: op.accountId,
+          listId: op.listId,
+          taskId: op.taskId,
+          status: op.status,
+        });
+        return;
+      case 'rename':
+        await invoke('todo_rename_task', {
+          accountId: op.accountId,
+          listId: op.listId,
+          taskId: op.taskId,
+          title: op.title,
+        });
+        return;
+      case 'delete':
+        await invoke('todo_delete_task', {
+          accountId: op.accountId,
+          listId: op.listId,
+          taskId: op.taskId,
+        });
+    }
+  }
+
+  /** Guards against two overlapping drains — the poll and a manual refresh can
+   *  both find the service alive in the same second, and replaying the queue
+   *  twice would create every offline task twice. */
+  let flushing = false;
+
+  /** [S-74] Drain the queue, oldest first, stopping at the first failure that
+   *  could succeed later (the server is still down, or the token needs a
+   *  refresh — the rest of the queue waits for the next attempt). A failure
+   *  that can NEVER succeed (a 400: the request itself is wrong) is dropped
+   *  instead, because one poison op at the head would otherwise block every
+   *  later change forever.
+   *
+   *  Order is preserved on purpose: an op may describe a task an earlier op
+   *  created. Reordering around a stuck op would send a rename for a task the
+   *  server has never heard of. */
+  async function flushOutbox(): Promise<void> {
+    if (flushing || isLocal()) return;
+    flushing = true;
+    let sent = 0;
+    try {
+      for (const op of outbox()) {
+        try {
+          await sendOp(op);
+          removeOp(op.id);
+          sent++;
+        } catch (e) {
+          const headline = errorHeadline(e);
+          // A non-retryable rejection is not "the server is down", it is "this
+          // write will never be accepted". Keep going with the rest.
+          if (isRetryableFailure(headline)) break;
+          removeOp(op.id);
+        }
+      }
+    } finally {
+      flushing = false;
+    }
+    // Re-read rather than patching the rows by hand: the server now knows the
+    // real ids of the tasks we created, so its answer is the truth to show.
+    if (sent) await load();
   }
 
   /** [S-69] The error state's visible retry. It calls the SAME `load()` that
@@ -417,7 +643,16 @@ export default function Todo(props: TodoProps) {
   // at the server already rate-limiting us, and the throttle could never clear.
   // The request-id guard ([S-40]) discards the stale RESULT; the request had
   // already gone out. Skipping the tick is what keeps the load off the wire.
-  createPolling(() => { if (inFlightSeq === null) void load(); }, refreshInterval, 'todo');
+  //
+  // [S-74] While the widget is painting CACHED data the tick slows to
+  // `OFFLINE_RETRY_MS`: its only job then is to notice the recovery, and the
+  // first tick that gets an answer drains the queue. `createPolling` re-arms on
+  // an interval change, so the switch happens the moment `offline` flips.
+  createPolling(
+    () => { if (inFlightSeq === null) void load(); },
+    () => (offline() ? OFFLINE_RETRY_MS : refreshInterval()),
+    'todo',
+  );
 
   /** The list a write about `task` must address. Every backend write is scoped
    *  to a list, and under Today the rows come from many lists — so the task's
@@ -456,6 +691,31 @@ export default function Todo(props: TodoProps) {
     // Optimistic update
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t));
 
+    // [S-73] The queued form of this tick, built once: both the "already
+    // offline" path and the "this write is the first thing to notice" path send
+    // exactly the same change.
+    const statusOp: PendingOp = {
+      id: newOpId(), at: Date.now(), kind: 'status',
+      accountId: effectiveIds()[0], listId: writeListId(task),
+      taskId: task.id, status: newStatus,
+    };
+    // Only a list that never carried completed tasks has to forget the row. A
+    // folded group still holds it — it is merely not drawn ([S-68]).
+    const settleDone = () => settle(task.id, {
+      leaving,
+      drop: leaving && !showCompleted() ? () => setTasks(prev => prev.filter(t => t.id !== task.id)) : undefined,
+    });
+
+    // [S-73] Offline, the tick is a QUEUED change rather than a request that is
+    // about to fail and snap back. The beat plays exactly as it does online —
+    // the user is not asked to care which of the two modes they are in — and
+    // the only visible difference is the banner and its pending count.
+    if (offline()) {
+      queueOp(statusOp);
+      settleDone();
+      return;
+    }
+
     try {
       await invoke('todo_update_task', {
         accountId: effectiveIds()[0],
@@ -466,13 +726,18 @@ export default function Todo(props: TodoProps) {
       // [S-26] Completing with completed tasks hidden has to remove the row from
       // the list. It goes through the same beat and fades first, rather than
       // disappearing out from under the cursor.
-      settle(task.id, {
-        leaving,
-        // Only a list that never carried completed tasks has to forget the row.
-        // A folded group still holds it — it is merely not drawn ([S-68]).
-        drop: leaving && !showCompleted() ? () => setTasks(prev => prev.filter(t => t.id !== task.id)) : undefined,
-      });
-    } catch {
+      settleDone();
+    } catch (e) {
+      // [S-73] "The service is down" is not "the write was rejected": keep the
+      // tick the user just made, queue it, and let the widget switch to its
+      // cached view. This is how a widget that has not polled since the API
+      // went down finds out — the write is the first evidence.
+      if (isServiceUnavailable(errorHeadline(e))) {
+        goOfflineNow();
+        queueOp(statusOp);
+        settleDone();
+        return;
+      }
       // Revert, and let go of the row at once: an animation for a write that
       // failed would only claim something happened.
       cancelSettle(task.id);
@@ -812,6 +1077,13 @@ export default function Todo(props: TodoProps) {
     if (isLocal()) { writeLocal(renameLocalTask(localList(), task.id, next)); return; }
 
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, title: next } : t));
+    // [S-73] Queued while offline, exactly like a tick.
+    const renameOp: PendingOp = {
+      id: newOpId(), at: Date.now(), kind: 'rename',
+      accountId: effectiveIds()[0], listId: writeListId(task),
+      taskId: task.id, title: next,
+    };
+    if (offline()) { queueOp(renameOp); return; }
     try {
       await invoke('todo_rename_task', {
         accountId: effectiveIds()[0],
@@ -819,7 +1091,10 @@ export default function Todo(props: TodoProps) {
         taskId: task.id,
         title: next,
       });
-    } catch {
+    } catch (e) {
+      // [S-73] Same rule as a tick: an outage keeps the edit and queues it, a
+      // rejection reverts it.
+      if (isServiceUnavailable(errorHeadline(e))) { goOfflineNow(); queueOp(renameOp); return; }
       setTasks(prev => prev.map(t => t.id === task.id ? { ...t, title: task.title } : t));
     }
   }
@@ -853,13 +1128,25 @@ export default function Todo(props: TodoProps) {
     if (isLocal()) { writeLocal(removeLocalTask(localList(), task.id)); return; }
     const idx = tasks().findIndex(t => t.id === task.id);
     setTasks(prev => prev.filter(t => t.id !== task.id));
+    // [S-73] Queued while offline. Deleting a task that itself never reached the
+    // server folds into "forget the create" (offlineData.enqueueOp), so the
+    // queue never sends a delete for an id the server has never seen.
+    const deleteOp: PendingOp = {
+      id: newOpId(), at: Date.now(), kind: 'delete',
+      accountId: effectiveIds()[0], listId: writeListId(task),
+      taskId: task.id,
+    };
+    if (offline()) { queueOp(deleteOp); return; }
     try {
       await invoke('todo_delete_task', {
         accountId: effectiveIds()[0],
         listId: writeListId(task),
         taskId: task.id,
       });
-    } catch {
+    } catch (e) {
+      // [S-73] An outage keeps the row gone and queues the delete; a rejection
+      // puts it back where it was.
+      if (isServiceUnavailable(errorHeadline(e))) { goOfflineNow(); queueOp(deleteOp); return; }
       setTasks(prev => [...prev.slice(0, idx), task, ...prev.slice(idx)]);
     }
   }
@@ -900,7 +1187,9 @@ export default function Todo(props: TodoProps) {
       return;
     }
 
-    const tempId = `temp-${Date.now()}`;
+    // A uuid, not the clock: several tasks can be typed while offline in the
+    // same millisecond, and the queue addresses each by this id ([S-72]).
+    const tempId = `temp-${crypto.randomUUID()}`;
     // [S-52] A task added from Today is due today — otherwise it would be
     // created undated and vanish from the very view it was typed into. The
     // optimistic row carries the same day so it survives the Today filter until
@@ -924,6 +1213,25 @@ export default function Todo(props: TodoProps) {
     setNewTitle('');
     setCreating(false);
 
+    // [S-73] Offline, the task is a queued CREATE. Its temp id is what the queue
+    // addresses it by, so a tick or a rename before the server ever sees it
+    // folds into the same op instead of being sent against an id Microsoft has
+    // never heard of (`enqueueOp`).
+    const createOp: PendingOp = {
+      id: newOpId(), at: Date.now(), kind: 'create',
+      accountId: effectiveIds()[0],
+      // Under Today this is the virtual id: the backend resolves it to the
+      // account's default list, exactly as it does on the online path.
+      listId: props.listId ?? '',
+      tempId, title, done: false,
+      dueDate: dueDate ?? null,
+    };
+    if (offline()) {
+      queueOp(createOp);
+      pinOrder();
+      return;
+    }
+
     try {
       const created = await invoke('todo_create_task', {
         accountId: effectiveIds()[0],
@@ -937,7 +1245,15 @@ export default function Todo(props: TodoProps) {
       // sorting — Graph hands back its lists most-recently-changed first, which
       // is exactly how a just-added task kept reappearing at the TOP.
       pinOrder();
-    } catch {
+    } catch (e) {
+      // [S-73] The typed task is not thrown away because the API is down: it
+      // stays on screen and goes out with the queue.
+      if (isServiceUnavailable(errorHeadline(e))) {
+        goOfflineNow();
+        queueOp(createOp);
+        pinOrder();
+        return;
+      }
       setTasks(prev => prev.filter(t => t.id !== tempId));
     }
   }
@@ -1115,15 +1431,58 @@ export default function Todo(props: TodoProps) {
             </button>
           </div>
           <Show when={showDetails()}>
-            <div class="todo-error-detail">
-              <div class="todo-error-meta">
-                <span class="todo-error-time">{new Date(errorAt()).toLocaleTimeString(lang())}</span>
-                <span>{error()}</span>
-              </div>
+            <ErrorDetailBlock at={errorAt()} headline={error() ?? ''} detail={errorDetail()} />
+          </Show>
+        </div>
+      </Show>
+
+      {/* [S-73] The widget is showing CACHED data: say so, say how old it is,
+          and say how much is waiting to go back. This is the whole difference
+          between "your tasks" and "your tasks as the server last knew them" —
+          without it the list would simply look stale, which is
+          indistinguishable from broken. */}
+      <Show when={offline() && !isLocal()}>
+        <div class="todo-offline" role="status">
+          <div class="todo-offline-main">
+            <CloudOff size={12} strokeWidth={1.75} class="todo-offline-icon" />
+            <span class="todo-offline-text">{t('todo.offlineTitle')}</span>
+            <Show when={pendingCount() > 0}>
+              <span class="todo-offline-pending">{t('todo.offlinePending', { count: pendingCount() })}</span>
+            </Show>
+          </div>
+          <div class="todo-offline-foot">
+            <span class="todo-offline-time">
+              {t('todo.offlineMeta', { time: new Date(offlineAt()).toLocaleTimeString(lang(), { hour: '2-digit', minute: '2-digit' }) })}
+            </span>
+            <div class="todo-offline-actions">
               <Show when={errorDetail()}>
-                {(detail) => <pre class="todo-error-body">{detail()}</pre>}
+                <button
+                  type="button"
+                  class="todo-offline-btn"
+                  aria-expanded={showDetails()}
+                  aria-label={t('todo.errorDetails')}
+                  title={t('todo.errorDetails')}
+                  onClick={() => setShowDetails(v => !v)}
+                >
+                  <ScrollText size={12} strokeWidth={1.5} />
+                </button>
               </Show>
+              {/* [S-74] Nothing has to wait the full retry interval: the same
+                  one fetch path, reachable by hand. */}
+              <button
+                type="button"
+                class="todo-offline-btn"
+                disabled={retrying()}
+                aria-label={t('common.refresh')}
+                title={t('common.refresh')}
+                onClick={retryLoad}
+              >
+                <RefreshCw size={12} strokeWidth={1.5} classList={{ 'todo-retrying': retrying() }} />
+              </button>
             </div>
+          </div>
+          <Show when={showDetails()}>
+            <ErrorDetailBlock at={errorAt()} headline={error() ?? ''} detail={errorDetail()} />
           </Show>
         </div>
       </Show>

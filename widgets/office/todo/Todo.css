@@ -426,6 +426,108 @@
   color: var(--foreground);
 }
 
+/* [S-71] The panel's head: the failure summary on the left, the copy button on
+   the right. The summary may wrap, the button never may. */
+.todo-error-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.todo-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: inherit;
+  font-size: calc(9.5px * var(--font-scale, 1));
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.todo-copy:hover { background: var(--card-hover); color: var(--foreground); }
+.todo-copy:focus-visible { outline: 1.5px solid var(--primary); outline-offset: 1px; }
+.todo-copy.copied { color: var(--foreground); border-color: var(--ring); }
+
+/* ── Offline banner [S-73] ──────────────────────────────────────────── */
+/* Deliberately NOT an error: the list under it is fully usable and every change
+   made in it is kept, so this is a status line, not a dialog. Two tight rows so
+   it costs the list as little height as possible in a 220px-wide widget. */
+.todo-offline {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 12px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--overlay-subtle);
+  font-size: calc(10px * var(--font-scale, 1));
+  line-height: 1.4;
+}
+.todo-offline-main,
+.todo-offline-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.todo-offline-icon { flex-shrink: 0; color: var(--muted-foreground); }
+.todo-offline-text {
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-offline-pending {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--overlay-hover);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.todo-offline-time {
+  color: var(--subtle-foreground);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todo-offline-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+/* Icon-only, so both the "why" toggle and the manual retry fit beside the
+   timestamp without turning the strip into a toolbar. */
+.todo-offline-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.todo-offline-btn:hover:not(:disabled) { background: var(--card-hover); color: var(--foreground); }
+.todo-offline-btn:focus-visible { outline: 1.5px solid var(--primary); outline-offset: 1px; }
+.todo-offline-btn:disabled { opacity: 0.6; cursor: default; }
+/* An open detail panel is a held state, not a hover: the toggle keeps the
+   pressed look while what it opened is on screen. */
+.todo-offline-btn[aria-expanded="true"] { background: var(--overlay-hover); color: var(--foreground); }
+.todo-offline .todo-error-detail { width: 100%; margin-top: 4px; }
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
@@ -457,6 +559,14 @@
 /* narrow: hide due dates */
 @container (max-width: 180px) {
   .todo-due { display: none; }
+}
+
+/* narrow: the offline strip gives up its timestamp before anything else — it
+   exists to say "this is cached, and this much is waiting", and the exact
+   minute is the least of those. [S-73] */
+@container (max-width: 200px) {
+  .todo-offline { padding-left: 10px; padding-right: 10px; }
+  .todo-offline-time { display: none; }
 }
 
 /* narrow: hide count badge */
