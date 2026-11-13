@@ -43,6 +43,7 @@ vi.mock('../../../src/viewContext.tsx', () => ({
 
 import Todo, { type TodoProps } from './Todo.tsx';
 import { seedLocalList } from './localListStore.ts';
+import { writeSnapshot } from './offlineStore.ts';
 
 function mount(props: TodoProps): { host: HTMLElement; dispose: () => void } {
   const host = document.createElement('div');
@@ -184,6 +185,37 @@ describe('todo widget mounts [S-65] [S-66]', () => {
 
     // The toggle's expansion is a plain <Show when={showDetails()}>; driving a
     // Solid delegated click under jsdom is not reliable, so it is checked live.
+    dispose();
+  });
+
+  // [S-72]/[S-73] The whole point of the cache: a 502 with a snapshot on disk
+  // shows the TASKS, not an error — and says so. Uses its own account+list so it
+  // cannot hand the test above a snapshot to fall back on.
+  it('paints the cached tasks, marked as cached, when the read fails', async () => {
+    const key = 'acct-offline|list-offline';
+    writeSnapshot(key, [
+      {
+        id: 'c1', title: 'From the cache', status: 'notStarted', importance: 'normal',
+        due_date: null, completed_at: null, list_id: 'list-offline',
+      },
+    ]);
+    invokeMock.mockImplementation(() => {
+      throw 'Graph API error 502\nrequest: /v1.0/me/todo/lists/list-offline/tasks';
+    });
+
+    const { host, dispose } = mount({
+      accountId: 'acct-offline',
+      listId: 'list-offline',
+      _widgetId: 'widget-offline',
+    });
+
+    await vi.waitFor(() => expect(host.querySelector('.todo-offline')).not.toBeNull());
+    // The rows are the cached ones, and the list is USABLE: the add row is there,
+    // which is what makes "offline" a mode rather than an error page.
+    expect(Array.from(host.querySelectorAll('.todo-title'), el => el.textContent)).toEqual(['From the cache']);
+    expect(host.querySelector('.todo-add-row'), 'offline tasks are still addable').not.toBeNull();
+    expect(host.querySelector('.todo-empty.todo-error'), 'no error page over the data').toBeNull();
+
     dispose();
   });
 });
