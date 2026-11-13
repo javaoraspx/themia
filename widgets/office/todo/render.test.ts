@@ -44,6 +44,17 @@ vi.mock('../../../src/viewContext.tsx', () => ({
 import Todo, { type TodoProps } from './Todo.tsx';
 import { seedLocalList } from './localListStore.ts';
 
+// Solid delegates `onClick` through a `$$click` property and one document
+// listener. jsdom does not always deliver that delegated event, so call the
+// handler directly when it is present; a plain dispatched event is the
+// fallback. Either way the component's own onClick runs exactly once.
+type DelegatedClick = HTMLElement & { $$click?: (e: MouseEvent) => void };
+function clickIt(el: HTMLElement): void {
+  const handler = (el as DelegatedClick).$$click;
+  if (typeof handler === 'function') handler(new MouseEvent('click', { bubbles: true }));
+  else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+}
+
 function mount(props: TodoProps): { host: HTMLElement; dispose: () => void } {
   const host = document.createElement('div');
   document.body.appendChild(host);
@@ -159,7 +170,7 @@ describe('todo widget mounts [S-65] [S-66]', () => {
 
     const before = invokeMock.mock.calls.length;
     invokeMock.mockImplementation(() => Promise.resolve([]));
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    clickIt(button);
 
     // The button is wired to the one fetch path: a click must start another
     // request. Not an exact call count — the poll/effect are free to add their
@@ -193,7 +204,7 @@ describe('todo widget mounts [S-65] [S-66]', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(host.querySelector('.todo-error-detail')).toBeNull();
 
-    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    clickIt(toggle);
     await vi.waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('true'));
     // Two stages on purpose: if the detail block is empty the panel still
     // renders, and the assertion message shows exactly what came out.
@@ -215,8 +226,7 @@ describe('todo widget mounts [S-65] [S-66]', () => {
     // once more after its 0-2s start stagger) must not fold the panel back up
     // while the user is reading it.
     const callsBefore = invokeMock.mock.calls.length;
-    (host.querySelector('.todo-retry') as HTMLButtonElement)
-      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    clickIt(host.querySelector('.todo-retry') as HTMLButtonElement);
     await vi.waitFor(() => expect(invokeMock.mock.calls.length).toBeGreaterThan(callsBefore));
     expect(host.querySelector('.todo-error-detail'), 'a repeat error must not fold the panel').not.toBeNull();
 
