@@ -159,7 +159,7 @@ describe('todo widget mounts [S-65] [S-66]', () => {
 
     const before = invokeMock.mock.calls.length;
     invokeMock.mockImplementation(() => Promise.resolve([]));
-    button.click();
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
     // The button is wired to the one fetch path: a click must start another
     // request. Not an exact call count — the poll/effect are free to add their
@@ -193,7 +193,8 @@ describe('todo widget mounts [S-65] [S-66]', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(host.querySelector('.todo-error-detail')).toBeNull();
 
-    toggle.click();
+    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('true'));
     // Two stages on purpose: if the detail block is empty the panel still
     // renders, and the assertion message shows exactly what came out.
     await vi.waitFor(
@@ -209,6 +210,15 @@ describe('todo widget mounts [S-65] [S-66]', () => {
     );
     expect(host.querySelector('.todo-error-body')!.textContent).toContain('/v1.0/me/todo/lists/L1/tasks');
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+    // Repeating the SAME failure (the poll does this on every interval, plus
+    // once more after its 0-2s start stagger) must not fold the panel back up
+    // while the user is reading it.
+    const callsBefore = invokeMock.mock.calls.length;
+    (host.querySelector('.todo-retry') as HTMLButtonElement)
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(invokeMock.mock.calls.length).toBeGreaterThan(callsBefore));
+    expect(host.querySelector('.todo-error-detail'), 'a repeat error must not fold the panel').not.toBeNull();
 
     // No local copy: a response body may contain paths and server internals.
     const persisted = Object.keys(window.localStorage).filter(k => /error|log/i.test(k));

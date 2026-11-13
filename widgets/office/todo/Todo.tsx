@@ -367,10 +367,18 @@ export default function Todo(props: TodoProps) {
         // the headline, and it is NOT persisted anywhere.
         const nl = err.indexOf('\n');
         const headline = nl < 0 ? err : err.slice(0, nl);
-        setError(headline === 'network_error' ? t('todo.networkError') : headline);
-        setErrorDetail(nl < 0 ? '' : err.slice(nl + 1).trim());
+        const shown = headline === 'network_error' ? t('todo.networkError') : headline;
+        const detail = nl < 0 ? '' : err.slice(nl + 1).trim();
+        // Fold the panel only for a DIFFERENT error. The poll repeats the same
+        // failure every interval (and once more after its 0-2s start stagger),
+        // so resetting here would close a detail the user is in the middle of
+        // reading — once a minute, at random.
+        if (error() !== shown || errorDetail() !== detail) {
+          setShowDetails(false);
+        }
+        setError(shown);
+        setErrorDetail(detail);
         setErrorAt(Date.now());
-        setShowDetails(false);
         setState('error');
       }
     } finally {
